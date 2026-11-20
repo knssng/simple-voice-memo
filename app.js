@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   useGps: true,
   keepAwake: true,
 };
+const APP_VERSION = 'v4';
 const MIN_RECORD_MS = 400; // これより短い押下は誤タップとして破棄
 
 function loadSettings() {
@@ -754,7 +755,7 @@ const settingsView = {
       `録音: ${window.MediaRecorder ? '対応' : '非対応'}`,
       `形式: ${window.MediaRecorder && MediaRecorder.isTypeSupported ? ['audio/mp4', 'audio/webm'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'なし' : '-'}`,
     ].join(' / ');
-    $('#diagLog').textContent = [env, navigator.userAgent, '', ...diag.items].join('\n');
+    $('#diagLog').textContent = [`アプリ版: ${APP_VERSION}`, env, navigator.userAgent, '', ...diag.items].join('\n');
   },
   async storageInfo() {
     const memos = await db.allMemos();
