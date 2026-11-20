@@ -12,7 +12,7 @@ const DEFAULT_SETTINGS = {
   useGps: true,
   keepAwake: true,
 };
-const APP_VERSION = 'v5';
+const APP_VERSION = 'v6';
 const MIN_RECORD_MS = 400; // これより短い押下は誤タップとして破棄
 
 function loadSettings() {
@@ -249,13 +249,16 @@ const speech = {
     if (this.rec || !SpeechRecognition) return;
     const rec = new SpeechRecognition();
     rec.lang = 'ja-JP';
-    rec.continuous = true;
+    // iOSでは continuous=true だと結果が返らないことがあるため、単発認識＋押下中は自動再開
+    rec.continuous = false;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     const tag = () => (this.session ? `#${this.session.no} ` : '');
     rec.onstart = () => { this.running = true; diag.log(`${tag()}認識: 開始`); };
     rec.onaudiostart = () => diag.log(`${tag()}認識: 音声入力あり`);
+    rec.onsoundstart = () => diag.log(`${tag()}認識: 音を検出`);
     rec.onspeechstart = () => diag.log(`${tag()}認識: 発話検出`);
+    rec.onnomatch = () => diag.log(`${tag()}認識: 一致なし`);
     rec.onresult = (e) => {
       const s = this.session;
       if (!s) return;
