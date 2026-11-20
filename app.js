@@ -124,6 +124,20 @@ function audioFileName(m) {
   if (!m.hasAudio) return '';
   return `memo_${pad(m.id, 4)}_${fmtStamp(new Date(m.start))}_${sanitize(m.category)}.${audioExt(m.audioType)}`;
 }
+/* 診断ログ（設定画面に表示。不具合調査用） */
+const diag = {
+  KEY: 'voicememo.diag.v1',
+  items: [],
+  load() { try { this.items = JSON.parse(localStorage.getItem(this.KEY) || '[]'); } catch { this.items = []; } },
+  log(msg) {
+    const d = new Date();
+    this.items.unshift(`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${msg}`);
+    this.items = this.items.slice(0, 40);
+    try { localStorage.setItem(this.KEY, JSON.stringify(this.items)); } catch { /* ignore */ }
+  },
+};
+diag.load();
+
 let toastTimer;
 function toast(msg, ms = 2200) {
   const el = $('#toast');
@@ -225,11 +239,15 @@ const recorder = {
             .find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
           s.mediaRecorder = new MediaRecorder(s.stream, mime ? { mimeType: mime } : undefined);
           s.mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) s.chunks.push(e.data); };
+          s.mediaRecorder.onerror = (e) => diag.log(`録音エラー: ${e.error ? e.error.name : 'unknown'}`);
           s.audioDone = new Promise((res) => { s.mediaRecorder.onstop = res; });
-          s.mediaRecorder.start(1000);
+          // timesliceを指定しない：iOS Safariでは分割データを結合すると再生できないファイルになることがある
+          s.mediaRecorder.start();
+          diag.log(`録音開始 形式=${s.mediaRecorder.mimeType || mime || '既定'}`);
         }
       } catch (err) {
         console.warn('mic error', err);
+        diag.log(`マイク取得失敗: ${err && err.name} ${err && err.message}`);
         if (err && err.name === 'NotAllowedError') toast('マイクの使用が許可されていません');
       }
     }
@@ -256,6 +274,7 @@ const recorder = {
       ui.liveText(s.committed + s.current);
     };
     rec.onerror = (e) => {
+      diag.log(`音声認識エラー: ${e.error}`);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         toast('音声認識が許可されていません（設定 > Safari > マイク / 音声入力を確認）', 4000);
       }
@@ -306,6 +325,7 @@ const recorder = {
       } else {
         const text = (s.committed + s.current).trim();
         const blob = s.chunks.length ? new Blob(s.chunks, { type: s.mediaRecorder.mimeType || s.chunks[0].type }) : null;
+        if (settings.saveAudio) diag.log(blob ? `音声保存 ${blob.type} ${(blob.size / 1024).toFixed(1)}KB` : '音声データなし（録音データを受信できず）');
         const memo = {
           vehicleId: settings.vehicleId,
           evaluator: settings.evaluator,
@@ -318,6 +338,7 @@ const recorder = {
           text,
           hasAudio: !!blob,
           audioType: blob ? blob.type : '',
+          audioSize: blob ? blob.size : 0,
         };
         await db.addMemo(memo, blob);
         toast(text ? `保存：${s.category}「${text.slice(0, 20)}${text.length > 20 ? '…' : ''}」` : `保存：${s.category}（テキストなし）`, 3000);
@@ -413,7 +434,7 @@ const ui = {
   showView(name) {
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
     document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
-    if (name === 'list') list.render();
+    if (name === 'list') list.render(); else list.stop();
     if (name === 'settings') settingsView.render();
   },
 };
@@ -447,10 +468,20 @@ const ui = {
 const list = {
   dirty: true,
   memos: [],
-  playing: null,
+  playing: null, // 再生中のボタン
+  urls: new Map(), // id -> objectURL（iOSはタップ直後に再生開始しないとブロックされるため事前に用意）
+  player: null,
 
   async render() {
+    this.stop();
+    this.urls.forEach((u) => URL.revokeObjectURL(u));
+    this.urls.clear();
     this.memos = (await db.allMemos()).sort((a, b) => b.id - a.id);
+    for (const m of this.memos) {
+      if (!m.hasAudio) continue;
+      const blob = await db.getAudio(m.id);
+      if (blob) this.urls.set(m.id, URL.createObjectURL(blob));
+    }
     const body = $('#memoBody');
     body.innerHTML = '';
     $('#emptyMsg').style.display = this.memos.length ? 'none' : 'block';
@@ -475,7 +506,7 @@ const list = {
       tm.innerHTML = '<div></div><div></div><div class="dur"></div>';
       tm.children[0].textContent = fmtTime(m.start);
       tm.children[1].textContent = fmtTime(m.end);
-      tm.children[2].textContent = `${m.durationSec.toFixed(1)}秒`;
+      tm.children[2].textContent = `${m.durationSec.toFixed(1)}秒` + (m.audioSize ? ` / ${Math.max(1, Math.round(m.audioSize / 1024))}KB` : '');
       tm.title = `${fmtDateTime(m.start)} 〜 ${fmtDateTime(m.end)}`;
 
       const textCell = td('col-text');
@@ -505,6 +536,11 @@ const list = {
       };
       if (m.hasAudio) {
         const pb = mkBtn('▶ 再生', '', () => this.play(m, pb));
+      } else {
+        const na = document.createElement('div');
+        na.className = 'no-audio';
+        na.textContent = '音声なし';
+        oc.appendChild(na);
       }
       if (m.lat != null) {
         const a = document.createElement('a');
@@ -526,27 +562,45 @@ const list = {
     this.dirty = false;
   },
 
-  async play(m, btn) {
-    if (this.playing) {
-      const prev = this.playing;
-      prev.audio.pause();
-      URL.revokeObjectURL(prev.url);
-      prev.btn.textContent = '▶ 再生';
-      this.playing = null;
-      if (prev.btn === btn) return;
+  getPlayer() {
+    if (!this.player) {
+      const a = document.createElement('audio');
+      a.setAttribute('playsinline', '');
+      a.preload = 'auto';
+      a.addEventListener('ended', () => this.stop());
+      a.addEventListener('error', () => {
+        const code = a.error ? a.error.code : '?';
+        diag.log(`再生エラー code=${code}`);
+        toast(`この音声は再生できません（エラー${code}）`);
+        this.stop();
+      });
+      document.body.appendChild(a);
+      this.player = a;
     }
-    const blob = await db.getAudio(m.id);
-    if (!blob) { toast('音声が見つかりません'); return; }
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    this.playing = { audio, url, btn };
+    return this.player;
+  },
+
+  stop() {
+    if (this.player) this.player.pause();
+    if (this.playing) this.playing.textContent = '▶ 再生';
+    this.playing = null;
+  },
+
+  // awaitを挟まずに再生開始する（iOSのユーザー操作要件）
+  play(m, btn) {
+    if (this.playing === btn) { this.stop(); return; }
+    this.stop();
+    const url = this.urls.get(m.id);
+    if (!url) { toast('音声が見つかりません'); return; }
+    const a = this.getPlayer();
+    a.src = url;
+    this.playing = btn;
     btn.textContent = '■ 停止';
-    audio.onended = () => {
-      btn.textContent = '▶ 再生';
-      URL.revokeObjectURL(url);
-      if (this.playing && this.playing.audio === audio) this.playing = null;
-    };
-    audio.play().catch((e) => toast('再生できません: ' + e.message));
+    a.play().catch((e) => {
+      diag.log(`再生失敗: ${e.name} ${e.message}`);
+      toast(`再生できません: ${e.name}`);
+      this.stop();
+    });
   },
 };
 
@@ -643,6 +697,12 @@ const settingsView = {
       box.appendChild(l);
     });
     this.storageInfo();
+    const env = [
+      `音声認識: ${SpeechRecognition ? '対応' : '非対応'}`,
+      `録音: ${window.MediaRecorder ? '対応' : '非対応'}`,
+      `形式: ${window.MediaRecorder && MediaRecorder.isTypeSupported ? ['audio/mp4', 'audio/webm'].filter((t) => MediaRecorder.isTypeSupported(t)).join(', ') || 'なし' : '-'}`,
+    ].join(' / ');
+    $('#diagLog').textContent = [env, navigator.userAgent, '', ...diag.items].join('\n');
   },
   async storageInfo() {
     const memos = await db.allMemos();

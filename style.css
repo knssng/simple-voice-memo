@@ -148,3 +148,9 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
   #view-record .live { grid-column: 2; grid-row: 1; }
   #view-record .rec-btn { grid-column: 2; grid-row: 2; height: 110px; }
 }
+
+.no-audio { color: var(--muted); font-size: 12px; text-align: center; margin-bottom: 4px; white-space: nowrap; }
+.diag {
+  background: #0b1220; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+  font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto;
+}
