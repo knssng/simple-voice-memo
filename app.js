@@ -65,11 +65,13 @@ const db = (() => {
 
   return {
     async addMemo(memo, audioBlob) {
-      return tx(['memos', 'audio'], 'readwrite', async (t) => {
-        const id = await reqP(t.objectStore('memos').add(memo));
-        if (audioBlob) t.objectStore('audio').put({ id, blob: audioBlob });
-        return id;
-      });
+      return tx(['memos', 'audio'], 'readwrite', (t) => new Promise((resolve) => {
+        const req = t.objectStore('memos').add(memo);
+        req.onsuccess = () => {
+          if (audioBlob) t.objectStore('audio').put({ id: req.result, blob: audioBlob });
+          resolve(req.result);
+        };
+      }));
     },
     async updateMemo(memo) {
       return tx(['memos'], 'readwrite', (t) => { t.objectStore('memos').put(memo); });
@@ -137,6 +139,8 @@ const diag = {
   },
 };
 diag.load();
+window.addEventListener('error', (e) => diag.log(`JSエラー: ${e.message}`));
+window.addEventListener('unhandledrejection', (e) => diag.log(`JSエラー: ${e.reason && (e.reason.message || e.reason)}`));
 
 let toastTimer;
 function toast(msg, ms = 2200) {
@@ -191,14 +195,56 @@ document.addEventListener('visibilitychange', () => {
  * 録音 + 音声認識
  * ======================================================= */
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* マイク：録音ごとに取得・解放を繰り返すとiOSで不安定になるため、記録画面にいる間は使い回す */
+const mic = {
+  stream: null,
+  pending: null,
+  live() {
+    return !!this.stream && this.stream.getAudioTracks().some((t) => t.readyState === 'live');
+  },
+  get() {
+    if (this.live()) return Promise.resolve(this.stream);
+    if (this.pending) return this.pending;
+    const t0 = Date.now();
+    this.pending = navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((st) => {
+        this.stream = st;
+        st.getAudioTracks().forEach((t) => {
+          t.addEventListener('ended', () => diag.log('マイク: 切断'));
+          t.addEventListener('mute', () => diag.log('マイク: ミュート'));
+          t.addEventListener('unmute', () => diag.log('マイク: ミュート解除'));
+        });
+        diag.log(`マイク取得 ${Date.now() - t0}ms`);
+        return st;
+      })
+      .catch((err) => {
+        diag.log(`マイク取得失敗: ${err.name} ${err.message}`);
+        if (err.name === 'NotAllowedError') toast('マイクの使用が許可されていません');
+        throw err;
+      })
+      .finally(() => { this.pending = null; });
+    return this.pending;
+  },
+  release() {
+    if (!this.stream) return;
+    this.stream.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    diag.log('マイク解放');
+  },
+};
+const audioWanted = () => settings.saveAudio && !!navigator.mediaDevices && !!window.MediaRecorder;
 
 const recorder = {
   active: null, // 現在の録音セッション
   busy: false,  // 保存処理中
+  seq: 0,
 
-  async start(category) {
+  start(category) {
     if (this.active || this.busy) return;
     const s = {
+      no: ++this.seq,
       category,
       start: new Date(),
       end: null,
@@ -210,11 +256,11 @@ const recorder = {
       recognitionEnded: null,
       mediaRecorder: null,
       chunks: [],
-      stream: null,
       audioDone: null,
     };
     this.active = s;
     ui.recordingStarted();
+    diag.log(`#${s.no} 押下 ${category}`);
 
     // GPSが古ければ、録音中に取得を試みる
     if (settings.useGps && !s.gps && 'geolocation' in navigator) {
@@ -224,36 +270,31 @@ const recorder = {
       );
     }
 
-    // 音声認識はユーザー操作の中で同期的に開始する（iOSの要件）
-    this.startRecognition(s);
-
-    // 音声ファイル保存
-    if (settings.saveAudio && navigator.mediaDevices && window.MediaRecorder) {
-      try {
-        s.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-        if (s.stopRequested) { // 取得中に指を離した
-          s.stream.getTracks().forEach((t) => t.stop());
-          s.stream = null;
-        } else {
-          const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']
-            .find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
-          s.mediaRecorder = new MediaRecorder(s.stream, mime ? { mimeType: mime } : undefined);
-          s.mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) s.chunks.push(e.data); };
-          s.mediaRecorder.onerror = (e) => diag.log(`録音エラー: ${e.error ? e.error.name : 'unknown'}`);
-          s.audioDone = new Promise((res) => { s.mediaRecorder.onstop = res; });
-          // timesliceを指定しない：iOS Safariでは分割データを結合すると再生できないファイルになることがある
-          s.mediaRecorder.start();
-          diag.log(`録音開始 形式=${s.mediaRecorder.mimeType || mime || '既定'}`);
-        }
-      } catch (err) {
-        console.warn('mic error', err);
-        diag.log(`マイク取得失敗: ${err && err.name} ${err && err.message}`);
-        if (err && err.name === 'NotAllowedError') toast('マイクの使用が許可されていません');
-      }
+    // 録音：マイクが準備済みなら即開始。未準備なら取得後に開始（待たずに先へ進む）
+    if (audioWanted()) {
+      if (mic.live()) this.beginAudio(s, mic.stream);
+      else mic.get().then((st) => { if (!s.stopRequested) this.beginAudio(s, st); }).catch(() => {});
     }
 
-    s.ready = true;
-    if (s.stopRequested) this.finish(s);
+    // 音声認識はユーザー操作の中で同期的に開始する（iOSの要件）
+    this.startRecognition(s);
+  },
+
+  beginAudio(s, stream) {
+    try {
+      const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']
+        .find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
+      const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) s.chunks.push(e.data); };
+      mr.onerror = (e) => diag.log(`#${s.no} 録音エラー: ${e.error ? e.error.name : 'unknown'}`);
+      s.audioDone = new Promise((res) => { mr.onstop = res; });
+      // timesliceを指定しない：iOS Safariでは分割データを結合すると再生できないファイルになることがある
+      mr.start();
+      s.mediaRecorder = mr;
+      diag.log(`#${s.no} 録音開始 +${Date.now() - s.start}ms ${mr.mimeType || mime || ''}`);
+    } catch (err) {
+      diag.log(`#${s.no} 録音開始失敗: ${err.name} ${err.message}`);
+    }
   },
 
   startRecognition(s) {
@@ -274,7 +315,7 @@ const recorder = {
       ui.liveText(s.committed + s.current);
     };
     rec.onerror = (e) => {
-      diag.log(`音声認識エラー: ${e.error}`);
+      diag.log(`#${s.no} 音声認識エラー: ${e.error}`);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         toast('音声認識が許可されていません（設定 > Safari > マイク / 音声入力を確認）', 4000);
       }
@@ -284,37 +325,42 @@ const recorder = {
       s.current = '';
       // 押下中に無音などで切れた場合は再開
       if (this.active === s && !s.stopRequested) {
+        diag.log(`#${s.no} 音声認識 再開`);
         try { this.startRecognition(s); return; } catch { /* fallthrough */ }
       }
       resolveEnd();
     };
-    try { rec.start(); } catch (err) { console.warn(err); resolveEnd(); }
+    try { rec.start(); } catch (err) { diag.log(`#${s.no} 音声認識開始失敗: ${err.name}`); resolveEnd(); }
   },
 
-  stop() {
+  stop(reason) {
     const s = this.active;
     if (!s || s.stopRequested) return;
     s.stopRequested = true;
     s.end = new Date();
-    // マイク準備中（getUserMedia待ち）の場合は start() 側で finish する
-    if (s.ready) this.finish(s);
+    diag.log(`#${s.no} 停止(${reason}) ${s.end - s.start}ms`);
+    this.finish(s);
   },
 
   async finish(s) {
-    if (s.finishing) return;
-    s.finishing = true;
     this.busy = true;
     ui.recordingStopping();
 
-    if (s.mediaRecorder && s.mediaRecorder.state !== 'inactive') s.mediaRecorder.stop();
+    if (s.mediaRecorder && s.mediaRecorder.state !== 'inactive') {
+      try { s.mediaRecorder.stop(); } catch (err) { diag.log(`#${s.no} 録音停止失敗: ${err.name}`); }
+    }
     if (s.recognition) { try { s.recognition.stop(); } catch { /* ignore */ } }
 
-    const timeout = (ms) => new Promise((r) => setTimeout(r, ms));
-    await Promise.all([
-      s.audioDone ? Promise.race([s.audioDone, timeout(3000)]) : null,
-      s.recognitionEnded ? Promise.race([s.recognitionEnded, timeout(4000)]) : null,
+    const [audioOk, recOk] = await Promise.all([
+      s.audioDone ? Promise.race([s.audioDone.then(() => true), sleep(2500).then(() => false)]) : true,
+      s.recognitionEnded ? Promise.race([s.recognitionEnded.then(() => true), sleep(3000).then(() => false)]) : true,
     ]);
-    if (s.stream) s.stream.getTracks().forEach((t) => t.stop());
+    if (!audioOk) diag.log(`#${s.no} 録音停止がタイムアウト`);
+    if (!recOk) {
+      // 終了しない認識は強制終了（次の録音とぶつからないように）
+      diag.log(`#${s.no} 音声認識の終了がタイムアウト→強制終了`);
+      try { s.recognition.abort(); } catch { /* ignore */ }
+    }
 
     this.active = null;
     const durMs = s.end - s.start;
@@ -324,8 +370,8 @@ const recorder = {
         toast('録音ボタンは押し続けてください');
       } else {
         const text = (s.committed + s.current).trim();
-        const blob = s.chunks.length ? new Blob(s.chunks, { type: s.mediaRecorder.mimeType || s.chunks[0].type }) : null;
-        if (settings.saveAudio) diag.log(blob ? `音声保存 ${blob.type} ${(blob.size / 1024).toFixed(1)}KB` : '音声データなし（録音データを受信できず）');
+        const blob = s.chunks.length ? new Blob(s.chunks, { type: (s.mediaRecorder && s.mediaRecorder.mimeType) || s.chunks[0].type }) : null;
+        if (audioWanted()) diag.log(blob ? `#${s.no} 音声 ${(blob.size / 1024).toFixed(1)}KB` : `#${s.no} 音声データなし`);
         const memo = {
           vehicleId: settings.vehicleId,
           evaluator: settings.evaluator,
@@ -340,13 +386,15 @@ const recorder = {
           audioType: blob ? blob.type : '',
           audioSize: blob ? blob.size : 0,
         };
-        await db.addMemo(memo, blob);
+        const id = await db.addMemo(memo, blob);
+        diag.log(`#${s.no} 保存 No.${id} 文字数${text.length}`);
         toast(text ? `保存：${s.category}「${text.slice(0, 20)}${text.length > 20 ? '…' : ''}」` : `保存：${s.category}（テキストなし）`, 3000);
         list.dirty = true;
       }
     } catch (err) {
       console.error(err);
-      toast('保存に失敗しました: ' + err.message, 4000);
+      diag.log(`#${s.no} 保存失敗: ${err && err.name} ${err && err.message}`);
+      toast('保存に失敗しました: ' + (err && err.message), 4000);
     } finally {
       this.busy = false;
       ui.recordingFinished();
@@ -380,6 +428,7 @@ const ui = {
       b.addEventListener('click', () => {
         if (recorder.active) return;
         this.selected = i;
+        if (audioWanted()) mic.get().catch(() => {});
         this.renderCategories();
         this.updateRecBtn();
       });
@@ -434,6 +483,7 @@ const ui = {
   showView(name) {
     document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
     document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
+    if (name !== 'record') mic.release();
     if (name === 'list') list.render(); else list.stop();
     if (name === 'settings') settingsView.render();
   },
@@ -451,15 +501,17 @@ const ui = {
   });
   const end = (e) => {
     if (!recorder.active) return;
-    if (e) e.preventDefault();
-    recorder.stop();
+    if (e && e.cancelable) e.preventDefault();
+    recorder.stop(e ? e.type : '');
   };
   btn.addEventListener('pointerup', end);
   btn.addEventListener('pointercancel', end);
   btn.addEventListener('lostpointercapture', end);
   btn.addEventListener('contextmenu', (e) => e.preventDefault());
-  // 画面が裏に回ったら停止
-  document.addEventListener('visibilitychange', () => { if (document.hidden) end(); });
+  // 画面が裏に回ったら停止し、マイクを解放
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { end({ type: 'hidden' }); mic.release(); }
+  });
 })();
 
 /* =========================================================
