@@ -1,7 +1,7 @@
 // オフライン用のアプリ本体キャッシュ。ファイル更新時は VERSION を上げる。
-const VERSION = 'v6';
+const VERSION = 'v7';
 const CACHE = `voicememo-${VERSION}`;
-const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'zip.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));

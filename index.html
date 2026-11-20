@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -24,26 +24,13 @@
     <!-- 記録 -->
     <section id="view-record" class="view active">
       <div class="cat-grid" id="catGrid"></div>
-
-      <div class="live" id="live">
-        <div class="live-head">
-          <span id="liveStatus">種類を選んでから、録音ボタンを押し続けて話してください</span>
-          <span id="liveTimer" class="timer"></span>
-        </div>
-        <div class="live-text" id="liveText"></div>
-      </div>
-
-      <button id="recBtn" class="rec-btn" disabled>
-        <span class="rec-dot"></span>
-        <span id="recLabel">種類を選択してください</span>
-      </button>
+      <div class="recent" id="recent"></div>
     </section>
 
     <!-- 一覧 -->
     <section id="view-list" class="view">
       <div class="list-actions">
         <button id="exportCsv" class="btn primary">CSV出力</button>
-        <button id="exportZip" class="btn">音声ZIP出力</button>
         <span class="count" id="count"></span>
       </div>
       <div class="table-wrap">
@@ -71,8 +58,6 @@
         <div id="catInputs"></div>
 
         <h2>オプション</h2>
-        <label class="check"><input type="checkbox" name="saveAudio"> 音声ファイルを保存する</label>
-        <p class="hint">iPhoneでは文字起こしと同時に使うと両方失敗することがあります。通常はOFF推奨。</p>
         <label class="check"><input type="checkbox" name="useGps"> 位置情報(GPS)を記録する</label>
         <label class="check"><input type="checkbox" name="keepAwake"> 画面を消灯させない</label>
 
@@ -84,11 +69,6 @@
         <p class="hint" id="storageInfo"></p>
         <button id="clearAll" class="btn danger-btn wide">全記録を削除</button>
       </div>
-
-      <div class="settings">
-        <h2>診断ログ（不具合時にスクリーンショットを送ってください）</h2>
-        <pre id="diagLog" class="diag"></pre>
-      </div>
     </section>
   </main>
 
@@ -98,9 +78,22 @@
     <button data-view="settings">設定</button>
   </nav>
 
+  <!-- 入力シート：種類タップで開き、キーボードの🎤で音声入力 -->
+  <div id="backdrop" class="backdrop" hidden></div>
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-head">
+      <span id="sheetCat" class="sheet-cat"></span>
+      <span class="sheet-time"><span id="sheetStart"></span> <span id="sheetElapsed" class="timer"></span></span>
+    </div>
+    <textarea id="sheetText" rows="4" enterkeyhint="done" placeholder="キーボードの🎤（マイク）を押して話してください"></textarea>
+    <div class="sheet-btns">
+      <button id="sheetCancel" class="btn">キャンセル</button>
+      <button id="sheetSave" class="btn primary">保存</button>
+    </div>
+  </div>
+
   <div id="toast" class="toast"></div>
 
-  <script src="zip.js?v=6"></script>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>
