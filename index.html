@@ -12,12 +12,12 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
   <header class="topbar">
     <div class="title">走行評価メモ</div>
-    <div class="meta" id="metaInfo"></div>
+    <div class="meta"><span id="metaInfo"></span><button id="asrStatus" class="asr-pill" hidden></button></div>
   </header>
 
   <main>
@@ -25,12 +25,18 @@
     <section id="view-record" class="view active">
       <div class="cat-grid" id="catGrid"></div>
       <div class="recent" id="recent"></div>
+      <button id="recBtn" class="rec-btn" disabled>
+        <span class="rec-dot"></span>
+        <span id="recLabel">種類を選択してください</span>
+        <span id="recTimer" class="rec-timer"></span>
+      </button>
     </section>
 
     <!-- 一覧 -->
     <section id="view-list" class="view">
       <div class="list-actions">
         <button id="exportCsv" class="btn primary">CSV出力</button>
+        <button id="exportZip" class="btn">CSV+音声ZIP</button>
         <span class="count" id="count"></span>
       </div>
       <div class="table-wrap">
@@ -57,6 +63,12 @@
         <h2>事象の種類（6個）</h2>
         <div id="catInputs"></div>
 
+        <h2>文字起こしモデル（端末内で処理）</h2>
+        <div id="modelInputs"></div>
+        <p class="hint">初回のみモデルをダウンロードします（Wi-Fi推奨）。以後は端末に保存され、通信なしで文字起こしできます。</p>
+        <button type="button" id="loadModel" class="btn wide">モデルをダウンロード／読込</button>
+        <p class="hint model-status" id="modelStatus"></p>
+
         <h2>オプション</h2>
         <label class="check"><input type="checkbox" name="useGps"> 位置情報(GPS)を記録する</label>
         <label class="check"><input type="checkbox" name="keepAwake"> 画面を消灯させない</label>
@@ -78,22 +90,9 @@
     <button data-view="settings">設定</button>
   </nav>
 
-  <!-- 入力シート：種類タップで開き、キーボードの🎤で音声入力 -->
-  <div id="backdrop" class="backdrop" hidden></div>
-  <div id="sheet" class="sheet" hidden>
-    <div class="sheet-head">
-      <span id="sheetCat" class="sheet-cat"></span>
-      <span class="sheet-time"><span id="sheetStart"></span> <span id="sheetElapsed" class="timer"></span></span>
-    </div>
-    <textarea id="sheetText" rows="4" enterkeyhint="done" placeholder="キーボードの🎤（マイク）を押して話してください"></textarea>
-    <div class="sheet-btns">
-      <button id="sheetCancel" class="btn">キャンセル</button>
-      <button id="sheetSave" class="btn primary">保存</button>
-    </div>
-  </div>
-
   <div id="toast" class="toast"></div>
 
-  <script src="app.js?v=7"></script>
+  <script src="zip.js?v=8"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

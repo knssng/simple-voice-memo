@@ -61,25 +61,41 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .recent-head { font-size: 12px; }
 .recent-text { color: var(--text); font-size: 15px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ===== 入力シート（キーボードに隠れないよう画面上部に表示） ===== */
-.backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 30; }
-.sheet {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 31;
-  background: var(--panel); border-bottom: 2px solid var(--accent);
-  padding: calc(var(--safe-t) + 12px) 16px 14px; display: flex; flex-direction: column; gap: 10px;
+.rec-btn {
+  flex: 0 0 auto; height: 120px; border-radius: 20px; border: 0;
+  background: #7f1d1d; color: #fff; font-size: 22px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none;
 }
-.backdrop[hidden], .sheet[hidden] { display: none; }
-.sheet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.sheet-cat { font-size: 22px; font-weight: 700; color: var(--accent); }
-.sheet-time { font-size: 13px; color: var(--muted); white-space: nowrap; }
-.timer { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 700; }
-#sheetText {
-  width: 100%; min-height: 110px; resize: none; font: inherit; font-size: 18px; line-height: 1.5;
-  background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+.rec-btn:not(:disabled) { background: var(--rec); }
+.rec-btn:disabled { background: #3f1d1d; color: #a8a29e; }
+.rec-dot { width: 22px; height: 22px; border-radius: 50%; background: #fff; }
+.rec-btn.recording { background: #b91c1c; box-shadow: 0 0 0 6px rgba(239,68,68,.35) inset; }
+.rec-btn.recording .rec-dot { animation: blink 1s infinite; }
+.rec-btn.busy { opacity: .7; }
+@keyframes blink { 50% { opacity: .2; } }
+.rec-timer { font-variant-numeric: tabular-nums; font-size: 20px; min-width: 3ch; }
+.cat-btn.selected { background: var(--accent); border-color: #e0f2fe; color: #0b1220; }
+.cat-btn.selected .num { color: #0b1220; }
+.cat-btn:active { background: var(--panel-2); color: inherit; }
+.cat-btn.selected:active { background: var(--accent); color: #0b1220; }
+
+.topbar .meta { display: flex; align-items: center; gap: 6px; }
+.asr-pill {
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--accent);
+  border-radius: 999px; padding: 2px 8px; font-size: 11px; white-space: nowrap;
 }
-.sheet-btns { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
-.sheet-btns .btn { padding: 14px 8px; font-size: 17px; white-space: nowrap; }
-body.sheet-open { overflow: hidden; }
+.recent-row { display: flex; gap: 8px; font-size: 13px; line-height: 1.6; min-width: 0; }
+.recent-row .recent-head { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+.recent-row .recent-text { margin: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.asr-state { font-size: 12px; color: var(--accent); margin-bottom: 4px; }
+.asr-state.err { color: #fca5a5; }
+.asr-state[hidden] { display: none; }
+.icon-btn.redo { font-size: 12px; }
+#modelInputs label.check { align-items: flex-start; }
+#modelInputs span { display: flex; flex-direction: column; }
+#modelInputs small { color: var(--muted); font-size: 12px; }
+.model-status { margin-top: 8px; color: var(--accent); }
 
 /* ===== 一覧 ===== */
 #view-list { padding: 12px 0 0; }
@@ -148,5 +164,10 @@ body.sheet-open { overflow: hidden; }
 /* 横向き：種類ボタンを3列に */
 @media (orientation: landscape) and (max-height: 560px) {
   #view-record .cat-grid { grid-template-columns: 1fr 1fr 1fr; }
-  #view-record .recent { display: none; }
+  #view-record.active { display: grid; grid-template-columns: 3fr 2fr; grid-template-rows: 1fr auto; gap: 10px; }
+  #view-record .cat-grid { grid-column: 1; grid-row: 1 / span 2; }
+  #view-record .recent { grid-column: 2; grid-row: 1; }
+  #view-record .rec-btn { grid-column: 2; grid-row: 2; height: 110px; }
 }
+
+#recLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
