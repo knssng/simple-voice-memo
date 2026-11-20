@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="走行メモ">
+  <meta name="theme-color" content="#111827">
+  <title>走行評価メモ</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">走行評価メモ</div>
+    <div class="meta" id="metaInfo"></div>
+  </header>
+
+  <main>
+    <!-- 記録 -->
+    <section id="view-record" class="view active">
+      <div class="cat-grid" id="catGrid"></div>
+
+      <div class="live" id="live">
+        <div class="live-head">
+          <span id="liveStatus">種類を選んでから、録音ボタンを押し続けて話してください</span>
+          <span id="liveTimer" class="timer"></span>
+        </div>
+        <div class="live-text" id="liveText"></div>
+      </div>
+
+      <button id="recBtn" class="rec-btn" disabled>
+        <span class="rec-dot"></span>
+        <span id="recLabel">種類を選択してください</span>
+      </button>
+    </section>
+
+    <!-- 一覧 -->
+    <section id="view-list" class="view">
+      <div class="list-actions">
+        <button id="exportCsv" class="btn primary">CSV出力</button>
+        <button id="exportZip" class="btn">音声ZIP出力</button>
+        <span class="count" id="count"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="memo-table">
+          <thead>
+            <tr>
+              <th>No</th><th>種類</th><th>開始 / 終了</th>
+              <th class="col-text">テキスト</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="memoBody"></tbody>
+        </table>
+        <p class="empty" id="emptyMsg">記録はまだありません</p>
+      </div>
+    </section>
+
+    <!-- 設定 -->
+    <section id="view-settings" class="view">
+      <form id="settingsForm" class="settings">
+        <h2>評価情報</h2>
+        <label>車両ID<input type="text" name="vehicleId" autocomplete="off"></label>
+        <label>評価者<input type="text" name="evaluator" autocomplete="off"></label>
+
+        <h2>事象の種類（6個）</h2>
+        <div id="catInputs"></div>
+
+        <h2>オプション</h2>
+        <label class="check"><input type="checkbox" name="saveAudio"> 音声ファイルを保存する</label>
+        <p class="hint">文字起こしがうまく動かない場合はOFFにしてお試しください。</p>
+        <label class="check"><input type="checkbox" name="useGps"> 位置情報(GPS)を記録する</label>
+        <label class="check"><input type="checkbox" name="keepAwake"> 画面を消灯させない</label>
+
+        <button type="submit" class="btn primary wide">保存</button>
+      </form>
+
+      <div class="settings danger">
+        <h2>データ管理</h2>
+        <p class="hint" id="storageInfo"></p>
+        <button id="clearAll" class="btn danger-btn wide">全記録を削除</button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-view="record" class="active">記録</button>
+    <button data-view="list">一覧</button>
+    <button data-view="settings">設定</button>
+  </nav>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="zip.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
