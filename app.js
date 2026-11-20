@@ -8,11 +8,11 @@ const DEFAULT_SETTINGS = {
   vehicleId: '',
   evaluator: '',
   categories: ['異音', '振動', '操縦安定性', '乗り心地', '警告灯・表示', 'その他'],
-  saveAudio: true,
+  saveAudio: false, // iPhoneでは音声認識と同時に使うと両方失敗することがあるため初期OFF
   useGps: true,
   keepAwake: true,
 };
-const APP_VERSION = 'v4';
+const APP_VERSION = 'v5';
 const MIN_RECORD_MS = 400; // これより短い押下は誤タップとして破棄
 
 function loadSettings() {
@@ -237,6 +237,102 @@ const mic = {
 };
 const audioWanted = () => settings.saveAudio && !!navigator.mediaDevices && !!window.MediaRecorder;
 
+/* 音声認識：iOS Safariでは録音ごとに新しく作ると2回目以降に失敗しやすいため、1つを使い回す */
+const speech = {
+  rec: null,
+  running: false,
+  session: null,     // 結果を渡す録音セッション
+  restartOnEnd: false,
+  results: 0,
+
+  init() {
+    if (this.rec || !SpeechRecognition) return;
+    const rec = new SpeechRecognition();
+    rec.lang = 'ja-JP';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    const tag = () => (this.session ? `#${this.session.no} ` : '');
+    rec.onstart = () => { this.running = true; diag.log(`${tag()}認識: 開始`); };
+    rec.onaudiostart = () => diag.log(`${tag()}認識: 音声入力あり`);
+    rec.onspeechstart = () => diag.log(`${tag()}認識: 発話検出`);
+    rec.onresult = (e) => {
+      const s = this.session;
+      if (!s) return;
+      if (this.results++ === 0) diag.log(`#${s.no} 認識: 結果受信`);
+      let text = '';
+      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+      s.current = text;
+      ui.liveText(s.committed + s.current);
+    };
+    rec.onerror = (e) => {
+      diag.log(`${tag()}認識エラー: ${e.error}`);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        toast('音声認識が許可されていません（設定 > アプリ > Safari > マイク、設定 > 一般 > キーボード > 音声入力 を確認）', 5000);
+      }
+    };
+    rec.onend = () => {
+      this.running = false;
+      const s = this.session;
+      diag.log(`${tag()}認識: 終了`);
+      if (s) {
+        s.committed += s.current;
+        s.current = '';
+        // 押下中に無音などで切れた場合、または前回の終了待ちだった場合は開始
+        if (recorder.active === s && !s.stopRequested) {
+          this.restartOnEnd = false;
+          this.begin();
+          return;
+        }
+        this.session = null;
+        if (s.resolveRecognition) s.resolveRecognition();
+      }
+    };
+    this.rec = rec;
+  },
+
+  begin() {
+    this.results = 0;
+    try { this.rec.start(); } catch (err) { diag.log(`認識開始失敗: ${err.name}`); }
+  },
+
+  start(s) {
+    if (!SpeechRecognition) return;
+    this.init();
+    s.recognitionEnded = new Promise((r) => { s.resolveRecognition = r; });
+    const prev = this.session;
+    this.session = s;
+    if (prev && prev.resolveRecognition) prev.resolveRecognition();
+    if (this.running) {
+      // 前回の認識がまだ終わっていない：止めて、終了後に開始
+      diag.log(`#${s.no} 認識: 前回の終了待ち`);
+      try { this.rec.abort(); } catch { /* ignore */ }
+      // 1秒待っても終わらなければ作り直す
+      setTimeout(() => {
+        if (this.running && this.session === s && recorder.active === s) {
+          diag.log(`#${s.no} 認識: 応答なし→作り直し`);
+          this.rec.onend = null;
+          this.rec = null;
+          this.running = false;
+          this.init();
+          this.begin();
+        }
+      }, 1000);
+    } else {
+      this.begin();
+    }
+  },
+
+  stop() {
+    if (this.rec && this.running) { try { this.rec.stop(); } catch { /* ignore */ } }
+    else if (this.session) { const s = this.session; this.session = null; if (s.resolveRecognition) s.resolveRecognition(); }
+  },
+
+  abort() {
+    if (this.rec) { try { this.rec.abort(); } catch { /* ignore */ } }
+  },
+};
+
 const recorder = {
   active: null, // 現在の録音セッション
   busy: false,  // 保存処理中
@@ -253,7 +349,6 @@ const recorder = {
       committed: '',   // 認識が途中で切れた場合の確定済みテキスト
       current: '',     // 現在の認識セッションのテキスト
       stopRequested: false,
-      recognition: null,
       recognitionEnded: null,
       mediaRecorder: null,
       chunks: [],
@@ -278,7 +373,7 @@ const recorder = {
     }
 
     // 音声認識はユーザー操作の中で同期的に開始する（iOSの要件）
-    this.startRecognition(s);
+    speech.start(s);
   },
 
   beginAudio(s, stream) {
@@ -298,42 +393,6 @@ const recorder = {
     }
   },
 
-  startRecognition(s) {
-    if (!SpeechRecognition) return;
-    const rec = new SpeechRecognition();
-    rec.lang = 'ja-JP';
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
-    s.recognition = rec;
-    let resolveEnd;
-    s.recognitionEnded = new Promise((r) => { resolveEnd = r; });
-
-    rec.onresult = (e) => {
-      let text = '';
-      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
-      s.current = text;
-      ui.liveText(s.committed + s.current);
-    };
-    rec.onerror = (e) => {
-      diag.log(`#${s.no} 音声認識エラー: ${e.error}`);
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        toast('音声認識が許可されていません（設定 > Safari > マイク / 音声入力を確認）', 4000);
-      }
-    };
-    rec.onend = () => {
-      s.committed += s.current;
-      s.current = '';
-      // 押下中に無音などで切れた場合は再開
-      if (this.active === s && !s.stopRequested) {
-        diag.log(`#${s.no} 音声認識 再開`);
-        try { this.startRecognition(s); return; } catch { /* fallthrough */ }
-      }
-      resolveEnd();
-    };
-    try { rec.start(); } catch (err) { diag.log(`#${s.no} 音声認識開始失敗: ${err.name}`); resolveEnd(); }
-  },
-
   stop(reason) {
     const s = this.active;
     if (!s || s.stopRequested) return;
@@ -350,7 +409,7 @@ const recorder = {
     if (s.mediaRecorder && s.mediaRecorder.state !== 'inactive') {
       try { s.mediaRecorder.stop(); } catch (err) { diag.log(`#${s.no} 録音停止失敗: ${err.name}`); }
     }
-    if (s.recognition) { try { s.recognition.stop(); } catch { /* ignore */ } }
+    speech.stop();
 
     const [audioOk, recOk] = await Promise.all([
       s.audioDone ? Promise.race([s.audioDone.then(() => true), sleep(2500).then(() => false)]) : true,
@@ -360,7 +419,7 @@ const recorder = {
     if (!recOk) {
       // 終了しない認識は強制終了（次の録音とぶつからないように）
       diag.log(`#${s.no} 音声認識の終了がタイムアウト→強制終了`);
-      try { s.recognition.abort(); } catch { /* ignore */ }
+      speech.abort();
     }
 
     this.active = null;
