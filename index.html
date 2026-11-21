@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=16">
+  <link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
   <header class="topbar">
@@ -38,8 +38,8 @@
     <!-- 一覧 -->
     <section id="view-list" class="view">
       <div class="list-actions">
-        <button id="exportCsv" class="btn primary">CSV出力</button>
-        <button id="exportZip" class="btn">CSV+音声ZIP</button>
+        <button id="exportCsv" class="btn" disabled>CSV出力</button>
+        <button id="exportZip" class="btn" disabled>CSV+音声ZIP</button>
         <span class="count" id="count"></span>
       </div>
       <div class="table-wrap">
@@ -101,7 +101,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="zip.js?v=16"></script>
-  <script src="app.js?v=16"></script>
+  <script src="zip.js?v=17"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>

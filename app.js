@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 
 /* =========================================================
  * 設定
@@ -827,6 +827,14 @@ const list = {
     body.innerHTML = '';
     $('#emptyMsg').style.display = memos.length ? 'none' : 'block';
     $('#count').textContent = `セッション${session.current()}・${memos.length} 件`;
+    // 出力できるデータがあるボタンだけ強調表示（ないときはトーンダウンして押せない）
+    const setExport = (sel, ok) => {
+      const b = $(sel);
+      b.disabled = !ok;
+      b.classList.toggle('primary', ok);
+    };
+    setExport('#exportCsv', memos.length > 0);
+    setExport('#exportZip', memos.some((m) => m.hasAudio));
     // 日付が複数あるときは、日付の変わり目に区切り行を入れる（No は日付ごとに振り直すため）
     const multiDay = new Set(memos.map((m) => ymd(m.start))).size > 1;
     let prevDay = null;
