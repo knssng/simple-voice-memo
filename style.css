@@ -92,9 +92,9 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .asr-state.err { color: #fca5a5; }
 .asr-state[hidden] { display: none; }
 .icon-btn.redo { font-size: 12px; }
-#modelInputs label.check { align-items: flex-start; }
-#modelInputs span { display: flex; flex-direction: column; }
-#modelInputs small { color: var(--muted); font-size: 12px; }
+#modelInputs label.check, #accelInputs label.check { align-items: flex-start; }
+#modelInputs span, #accelInputs span { display: flex; flex-direction: column; }
+#modelInputs small, #accelInputs small { color: var(--muted); font-size: 12px; }
 .model-status { margin-top: 8px; color: var(--accent); }
 
 /* ===== 一覧 ===== */
@@ -176,3 +176,4 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .icon-btn.small { font-size: 12px; padding: 4px 8px; margin-top: 4px; align-self: flex-start; }
 .persist { color: #4ade80; }
 .persist.warn { color: #fbbf24; }
+.asr-time { color: var(--accent); }

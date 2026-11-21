@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
   <header class="topbar">
@@ -66,6 +66,8 @@
         <h2>文字起こしモデル（端末内で処理）</h2>
         <div id="modelInputs"></div>
         <p class="hint">初回のみモデルをダウンロードします（Wi-Fi推奨）。以後は端末に保存され、通信なしで文字起こしできます。</p>
+        <h2>処理方式</h2>
+        <div id="accelInputs"></div>
         <button type="button" id="loadModel" class="btn wide">モデルをダウンロード／読込</button>
         <p class="hint model-status" id="modelStatus"></p>
 
@@ -93,7 +95,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="zip.js?v=9"></script>
-  <script src="app.js?v=9"></script>
+  <script src="zip.js?v=10"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

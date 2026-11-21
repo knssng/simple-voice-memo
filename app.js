@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 
 /* =========================================================
  * 設定
@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS = {
   evaluator: '',
   categories: ['異音', '振動', '操縦安定性', '乗り心地', '警告灯・表示', 'その他'],
   model: DEFAULT_MODEL,
+  accel: 'cpu', // 'cpu'（複数スレッド） | 'webgpu'（GPU・試験的）
   useGps: true,
   keepAwake: true,
 };
@@ -34,6 +35,7 @@ function loadSettings() {
     const cats = Array.isArray(s.categories) ? s.categories : DEFAULT_SETTINGS.categories;
     merged.categories = Array.from({ length: 6 }, (_, i) => (cats[i] ?? '').toString());
     if (!MODELS[merged.model]) merged.model = DEFAULT_MODEL;
+    if (merged.accel !== 'webgpu') merged.accel = 'cpu';
     return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -291,8 +293,8 @@ const recorder = {
       memo.id = id;
       toast(`保存：${s.category}（${memo.durationSec}秒）${blob ? ' → 文字起こし待ち' : ''}`);
       if (blob) transcriber.enqueue(id);
-      if (blob && transcriber.loadedModel !== settings.model && transcriber.state !== 'loading' && !(await modelCache.isCached(settings.model))) {
-        toast('文字起こしモデルをダウンロードします（約250MB）。Wi-Fi推奨', 4000);
+      if (blob && transcriber.loadedKey !== wantKey() && transcriber.state !== 'loading' && !(await modelCache.isCached(settings.model, settings.accel))) {
+        toast('文字起こしモデルをダウンロードします（数百MB）。Wi-Fi推奨', 4000);
       }
       ui.renderRecent();
       list.refreshRow(memo);
@@ -316,7 +318,7 @@ const transcriber = {
 
   ensureWorker() {
     if (this.worker) return;
-    this.worker = new Worker('whisper-worker.js?v=9', { type: 'module' });
+    this.worker = new Worker('whisper-worker.js?v=10', { type: 'module' });
     this.worker.onmessage = (e) => this.onMessage(e.data);
     this.worker.onerror = (e) => {
       this.state = 'error';
@@ -330,9 +332,13 @@ const transcriber = {
       this.state = 'loading';
       this.progress[msg.file] = { loaded: msg.loaded, total: msg.total };
       ui.renderAsrStatus();
+    } else if (msg.type === 'fallback') {
+      toast(`GPUが使えないためCPUで処理します（${msg.message}）`, 5000);
     } else if (msg.type === 'ready') {
       this.state = 'ready';
       this.loadedModel = msg.model;
+      this.loadedKey = `${msg.model}|${msg.requested || msg.mode}`;
+      this.loadedLabel = msg.label;
       if (settingsView.visible()) settingsView.render();
       this.progress = {};
       ui.renderAsrStatus();
@@ -357,11 +363,11 @@ const transcriber = {
 
   async preload() {
     this.ensureWorker();
-    if (this.loadedModel === settings.model || this.state === 'loading') return;
-    this.fromCache = await modelCache.isCached(settings.model);
+    if (this.loadedKey === wantKey() || this.state === 'loading') return;
+    this.fromCache = await modelCache.isCached(settings.model, settings.accel);
     this.state = 'loading';
     ui.renderAsrStatus();
-    this.worker.postMessage({ type: 'load', model: settings.model });
+    this.worker.postMessage({ type: 'load', model: settings.model, mode: settings.accel });
   },
 
   enqueue(id) {
@@ -387,14 +393,14 @@ const transcriber = {
       if (!blob) throw new Error('音声が見つかりません');
       const audio = await decodeTo16k(blob);
       this.ensureWorker();
-      if (this.loadedModel !== settings.model && this.state !== 'loading') {
-        this.fromCache = await modelCache.isCached(settings.model);
+      if (this.loadedKey !== wantKey() && this.state !== 'loading') {
+        this.fromCache = await modelCache.isCached(settings.model, settings.accel);
         this.state = 'loading';
         ui.renderAsrStatus();
       }
       const res = await new Promise((resolve) => {
         this.callbacks.set(id, resolve);
-        this.worker.postMessage({ type: 'transcribe', id, model: settings.model, audio }, [audio.buffer]);
+        this.worker.postMessage({ type: 'transcribe', id, model: settings.model, mode: settings.accel, audio }, [audio.buffer]);
       });
       const latest = await db.getMemo(id);
       if (!latest) return; // 処理中に削除された
@@ -404,6 +410,7 @@ const transcriber = {
         latest.status = 'done';
         latest.asrModel = settings.model;
         latest.asrMs = res.ms;
+        latest.asrLabel = res.label;
       } else {
         latest.status = 'error';
         latest.asrError = res.message;
@@ -427,6 +434,8 @@ const transcriber = {
   },
 };
 
+const wantKey = () => `${settings.model}|${settings.accel}`;
+
 /* モデルのキャッシュ（transformers.js が Cache Storage 'transformers-cache' に保存する） */
 const modelCache = {
   async files(model) {
@@ -436,9 +445,13 @@ const modelCache = {
       return (await c.keys()).filter((r) => r.url.includes(`/${model}/`));
     } catch { return []; }
   },
-  async isCached(model) {
+  /** mode: 'cpu' は int8、'webgpu' は fp16/q4 のファイル。省略時はどちらか */
+  async isCached(model, mode) {
     const urls = (await this.files(model)).map((r) => r.url);
-    return urls.some((u) => /encoder_model/.test(u)) && urls.some((u) => /decoder_model/.test(u));
+    const has = (re) => urls.some((u) => re.test(u));
+    const cpu = has(/encoder_model_quantized\.onnx/) && has(/decoder_model_merged_quantized\.onnx/);
+    const gpu = has(/encoder_model_(fp16|q4)\.onnx/) && has(/decoder_model_merged_q4\.onnx/);
+    return mode === 'cpu' ? cpu : mode === 'webgpu' ? gpu : (cpu || gpu);
   },
   async remove(model) {
     const c = await caches.open('transformers-cache');
@@ -492,7 +505,7 @@ const ui = {
     if (t.state === 'loading') txt = t.fromCache ? `モデルを端末から読込中 ${t.loadPercent()}%` : `モデルをダウンロード中 ${t.loadPercent()}%`;
     else if (t.state === 'error') txt = '文字起こしエラー';
     else if (n) txt = `文字起こし中（残り${n}件）`;
-    else if (t.loadedModel === settings.model) txt = '文字起こし準備OK';
+    else if (t.loadedKey === wantKey()) txt = `文字起こし準備OK（${t.loadedLabel}）`;
     else txt = 'モデル未取得（設定でダウンロード）';
     $('#asrStatus').textContent = txt;
     $('#asrStatus').hidden = !txt;
@@ -500,7 +513,7 @@ const ui = {
     if (ms) {
       ms.textContent = t.state === 'loading' ? (t.fromCache ? `端末から読込中…（通信なし） ${t.loadPercent()}%` : `ダウンロード中… ${t.loadPercent()}%`)
         : t.state === 'error' ? `エラー: ${t.lastError || ''}`
-          : t.loadedModel === settings.model ? '読込済み（オフラインでも使えます）' : '未読込';
+          : t.loadedKey === wantKey() ? `読込済み・${t.loadedLabel}で処理（オフラインでも使えます）` : '未読込';
     }
   },
 
@@ -668,6 +681,9 @@ const list = {
     tm.children[0].textContent = fmtTime(m.start);
     tm.children[1].textContent = fmtTime(m.end);
     tm.children[2].textContent = `${m.durationSec.toFixed(1)}秒`;
+    const asrEl = document.createElement('div');
+    asrEl.className = 'dur asr-time';
+    tm.appendChild(asrEl);
     tm.title = `${fmtDateTime(m.start)} 〜 ${fmtDateTime(m.end)}`;
 
     const textCell = td('col-text');
@@ -724,7 +740,7 @@ const list = {
       this.render();
     });
 
-    this.rows.set(m.id, { tr, ta, statusEl, fit });
+    this.rows.set(m.id, { tr, ta, statusEl, fit, asrEl });
     this.applyState(m);
     return tr;
   },
@@ -738,6 +754,9 @@ const list = {
     r.statusEl.textContent = m.status === 'error' ? `文字起こし失敗：${m.asrError || ''}` : statusText(m);
     r.statusEl.hidden = !r.statusEl.textContent;
     r.statusEl.classList.toggle('err', m.status === 'error');
+    r.asrEl.textContent = m.status === 'done' && m.asrMs ? `変換${(m.asrMs / 1000).toFixed(1)}秒` : '';
+    r.asrEl.title = m.asrLabel || '';
+    if (m.status === 'done' && m.asrLabel) r.asrEl.textContent += ` ${m.asrLabel.startsWith('GPU') ? 'GPU' : 'CPU'}`;
     requestAnimationFrame(r.fit);
   },
 
@@ -915,6 +934,25 @@ const settingsView = {
         }
       });
     });
+    const ab = $('#accelInputs');
+    ab.innerHTML = '';
+    [['cpu', 'CPU（複数コアで並列計算）', `標準。${window.crossOriginIsolated ? '並列計算 有効' : '並列計算 無効（ページを開き直すと有効になります）'}`],
+      ['webgpu', 'GPU（WebGPU・試験的）', `${'gpu' in navigator ? 'この端末はWebGPU対応' : 'この端末・ブラウザはWebGPU非対応'}。GPU用のモデルを追加でダウンロード（約300〜410MB）。失敗時は自動でCPUに切替`]]
+      .forEach(([id, label, note]) => {
+        const l = document.createElement('label');
+        l.className = 'check';
+        const r = document.createElement('input');
+        r.type = 'radio';
+        r.name = 'accel';
+        r.value = id;
+        r.checked = settings.accel === id;
+        const span = document.createElement('span');
+        span.innerHTML = '<b></b><small></small>';
+        span.firstChild.textContent = label;
+        span.lastChild.textContent = note;
+        l.append(r, span);
+        ab.appendChild(l);
+      });
     ui.renderAsrStatus();
     this.storageInfo();
   },
@@ -943,12 +981,13 @@ const settingsView = {
 $('#settingsForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
-  const prevModel = settings.model;
+  const prevKey = wantKey();
   settings = {
     vehicleId: f.vehicleId.value.trim(),
     evaluator: f.evaluator.value.trim(),
     categories: Array.from({ length: 6 }, (_, i) => f[`cat${i}`].value.trim()),
     model: f.model.value || DEFAULT_MODEL,
+    accel: f.accel.value === 'webgpu' ? 'webgpu' : 'cpu',
     useGps: f.useGps.checked,
     keepAwake: f.keepAwake.checked,
   };
@@ -957,8 +996,9 @@ $('#settingsForm').addEventListener('submit', (e) => {
   ui.renderMeta();
   ui.renderCategories();
   ui.renderAsrStatus();
-  toast(settings.model !== prevModel ? '設定を保存しました。モデルを読み込み直します' : '設定を保存しました');
-  if (settings.model !== prevModel) transcriber.preload();
+  const changed = wantKey() !== prevKey;
+  toast(changed ? '設定を保存しました。モデルを読み込み直します' : '設定を保存しました');
+  if (changed) transcriber.preload();
 });
 
 $('#loadModel').addEventListener('click', () => {
@@ -987,10 +1027,20 @@ ui.renderAsrStatus();
 gps.start();
 requestWakeLock();
 // 一度ダウンロード済みのモデルなら裏で読み込んでおく（キャッシュから読むので通信は発生しない）
-modelCache.isCached(settings.model).then((cached) => { if (cached) transcriber.preload(); });
+modelCache.isCached(settings.model, settings.accel).then((cached) => { if (cached) transcriber.preload(); });
 transcriber.resumePending(); // 前回終わらなかった文字起こしを再開
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  // 並列計算に必要なヘッダーは Service Worker が付与する。SW 適用前に開いた場合は開き直す（1セッション最大2回）
+  if (!window.crossOriginIsolated) {
+    const reloadOnce = () => {
+      let n = 0;
+      try { n = Number(sessionStorage.getItem('voicememo.coiReload') || 0); sessionStorage.setItem('voicememo.coiReload', String(n + 1)); } catch { n = 99; }
+      if (n < 2 && !recorder.active) location.reload();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+    navigator.serviceWorker.ready.then(() => { if (navigator.serviceWorker.controller) reloadOnce(); });
+  }
 }
 $('#asrStatus').addEventListener('click', () => { if (!recorder.active) ui.showView('settings'); });
