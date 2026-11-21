@@ -216,26 +216,26 @@ async function recognize(samples, lang) {
 }
 
 let chain = Promise.resolve();
+const LABEL = `CPU ${THREADS}スレッド`;
 self.onmessage = (e) => {
   const msg = e.data;
   chain = chain.then(async () => {
+    // モデルの読み込み（失敗は loadError として音声の失敗と区別する）
     try {
-      if (msg.type === 'load') {
-        await load(msg.host);
-        self.postMessage({ type: 'ready', model: msg.model, mode: msg.mode, label: `CPU ${THREADS}スレッド` });
-      } else if (msg.type === 'transcribe') {
-        const wasLoaded = !!session;
-        await load(msg.host);
-        if (!wasLoaded) self.postMessage({ type: 'ready', model: msg.model, mode: msg.mode, label: `CPU ${THREADS}スレッド` });
-        const t0 = performance.now();
-        const text = await recognize(msg.audio, msg.lang);
-        self.postMessage({ type: 'result', id: msg.id, text, ms: Math.round(performance.now() - t0), label: `CPU ${THREADS}スレッド` });
-      }
+      const wasLoaded = !!session;
+      await load(msg.host);
+      if (!wasLoaded || msg.type === 'load') self.postMessage({ type: 'ready', model: msg.model, label: LABEL });
+    } catch (err) {
+      self.postMessage({ type: 'loadError', id: msg.id, message: String((err && err.message) || err) });
+      return;
+    }
+    if (msg.type !== 'transcribe') return;
+    try {
+      const t0 = performance.now();
+      const text = await recognize(msg.audio, msg.lang);
+      self.postMessage({ type: 'result', id: msg.id, text, ms: Math.round(performance.now() - t0), label: LABEL });
     } catch (err) {
       self.postMessage({ type: 'error', id: msg.id, message: String((err && err.message) || err) });
     }
   });
 };
-
-// テスト用に内部関数を公開
-self.__sv = { fbank, lfrCmvn, readMetadata };

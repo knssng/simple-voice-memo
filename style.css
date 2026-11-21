@@ -206,3 +206,13 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .memo-table td.ops .icon-btn { padding: 6px 6px; font-size: 12px; }
 .rec-btn { font-size: 19px; gap: 10px; padding: 0 12px; }
 .settings label.check input { flex: 0 0 auto; }
+
+/* 右上の状態表示 */
+.asr-pill.ok { color: #4ade80; border-color: #166534; }
+.asr-pill.busy { color: var(--accent); }
+.asr-pill.warn { color: #fbbf24; border-color: #92400e; }
+.asr-pill.err { color: #fecaca; background: #450a0a; border-color: #7f1d1d; }
+.model-status.ok { color: #4ade80; }
+.model-status.warn { color: #fbbf24; }
+.model-status.err { color: #fca5a5; }
+#loadModel:disabled { opacity: .6; }

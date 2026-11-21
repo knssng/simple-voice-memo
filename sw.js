@@ -1,5 +1,5 @@
 // オフライン用のアプリ本体キャッシュ + 並列計算用のヘッダー付与。ファイル更新時は VERSION を上げる。
-const VERSION = 'v11';
+const VERSION = 'v12';
 const PREFIX = 'voicememo-';
 const CACHE = `${PREFIX}${VERSION}`;
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'zip.js', 'whisper-worker.js', 'sensevoice-worker.js', 'lib/transformers.min.js', 'lib/ort.webgpu.min.mjs', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
@@ -10,7 +10,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      // 古いアプリ本体のキャッシュだけを消す（文字起こしモデルの 'transformers-cache' は残す）
+      // 古いアプリ本体のキャッシュだけを消す（文字起こしモデルの 'transformers-cache' / 'sensevoice-cache' は残す）
       .then((keys) => Promise.all(keys.filter((k) => k.startsWith(PREFIX) && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );

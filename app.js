@@ -6,16 +6,16 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 
 /* =========================================================
  * 設定
  * ======================================================= */
 const SETTINGS_KEY = 'voicememo.settings.v1';
 const MODELS = {
-  'sensevoice-small': { engine: 'sensevoice', label: 'SenseVoice（FunASR・約240MB）', note: '推奨。中国語・日本語とも高精度で高速（数秒の音声を1秒前後）。CPUで処理' },
-  'onnx-community/whisper-small': { engine: 'whisper', label: 'Whisper small（OpenAI・約250MB）', note: '高精度。1件あたり数秒〜十数秒' },
-  'onnx-community/whisper-base': { engine: 'whisper', label: 'Whisper base（OpenAI・約80MB）', note: '軽量だが誤変換が多い' },
+  'sensevoice-small': { engine: 'sensevoice', sizeMB: 240, label: 'SenseVoice（FunASR・約240MB）', note: '推奨。中国語・日本語とも高精度で高速（数秒の音声を1秒前後）。CPUで処理' },
+  'onnx-community/whisper-small': { engine: 'whisper', sizeMB: 250, label: 'Whisper small（OpenAI・約250MB）', note: '高精度。1件あたり数秒〜十数秒' },
+  'onnx-community/whisper-base': { engine: 'whisper', sizeMB: 77, label: 'Whisper base（OpenAI・約80MB）', note: '軽量だが誤変換が多い' },
 };
 const DEFAULT_MODEL = 'sensevoice-small';
 // モデルの配布元（中国国内では huggingface.co に接続できないためミラーを選ぶ）
@@ -30,7 +30,6 @@ const DEFAULT_SETTINGS = {
   evaluator: '',
   categories: ['異音', '振動', '操縦安定性', '乗り心地', '警告灯・表示', 'その他'],
   model: DEFAULT_MODEL,
-  accel: 'cpu', // 'cpu'（複数スレッド） | 'webgpu'（GPU・試験的、Whisperのみ）
   host: 'hf',
   lang: 'ja',   // 録音時の言語（録音ボタン横でワンタップ切替）
   useGps: true,
@@ -45,7 +44,7 @@ function loadSettings() {
     const cats = Array.isArray(s.categories) ? s.categories : DEFAULT_SETTINGS.categories;
     merged.categories = Array.from({ length: 6 }, (_, i) => (cats[i] ?? '').toString());
     if (!MODELS[merged.model]) merged.model = DEFAULT_MODEL;
-    if (merged.accel !== 'webgpu') merged.accel = 'cpu';
+    delete merged.accel; // 旧版の CPU/GPU 設定（廃止）
     if (!HOSTS[merged.host]) merged.host = 'hf';
     if (!LANGS[merged.lang]) merged.lang = 'ja';
     return merged;
@@ -306,8 +305,8 @@ const recorder = {
       memo.id = id;
       toast(`保存：${s.category}（${memo.durationSec}秒）${blob ? ' → 文字起こし待ち' : ''}`);
       if (blob) transcriber.enqueue(id);
-      if (blob && transcriber.loadedKey !== wantKey() && transcriber.state !== 'loading' && !(await modelCache.isCached(settings.model, settings.accel))) {
-        toast('文字起こしモデルをダウンロードします（数百MB）。Wi-Fi推奨', 4000);
+      if (blob && transcriber.state === 'idle' && !(await modelCache.isCached(settings.model))) {
+        toast('文字起こしモデルが未ダウンロードです。設定画面でダウンロードしてください', 4000);
       }
       ui.renderRecent();
       list.refreshRow(memo);
@@ -322,11 +321,14 @@ const recorder = {
  * ======================================================= */
 const transcriber = {
   worker: null,
-  queue: [],       // 待ちの memo id
-  current: null,   // 処理中の memo id
-  state: 'idle',   // idle | loading | ready | error
-  progress: {},    // file -> {loaded,total}
-  loadedModel: null,
+  workerEngine: null,
+  queue: [],        // 待ちの memo id
+  current: null,    // 処理中の memo id
+  state: 'idle',    // idle（未読込）| loading（読込中）| ready（準備OK）| error（モデル取得失敗）
+  progress: {},     // file -> {loaded,total}
+  loadedKey: null,  // 読み込み済みのモデル
+  fromCache: false, // 端末から読み込み中か（false ならダウンロード中）
+  lastError: '',
   callbacks: new Map(),
 
   ensureWorker() {
@@ -339,13 +341,9 @@ const transcriber = {
       this.state = 'idle';
     }
     this.workerEngine = engine;
-    this.worker = new Worker(engine === 'sensevoice' ? 'sensevoice-worker.js?v=11' : 'whisper-worker.js?v=11', { type: 'module' });
+    this.worker = new Worker(engine === 'sensevoice' ? 'sensevoice-worker.js?v=12' : 'whisper-worker.js?v=12', { type: 'module' });
     this.worker.onmessage = (e) => this.onMessage(e.data);
-    this.worker.onerror = (e) => {
-      this.state = 'error';
-      this.lastError = e.message || 'ワーカーの起動に失敗しました';
-      ui.renderAsrStatus();
-    };
+    this.worker.onerror = (e) => this.fail(e.message || 'ワーカーの起動に失敗しました');
   },
 
   onMessage(msg) {
@@ -353,26 +351,39 @@ const transcriber = {
       this.state = 'loading';
       this.progress[msg.file] = { loaded: msg.loaded, total: msg.total };
       ui.renderAsrStatus();
-    } else if (msg.type === 'fallback') {
-      toast(`GPUが使えないためCPUで処理します（${msg.message}）`, 5000);
     } else if (msg.type === 'ready') {
       this.state = 'ready';
-      this.loadedModel = msg.model;
-      this.loadedKey = `${msg.model}|${msg.requested || msg.mode}`;
+      this.loadedKey = msg.model;
       this.loadedLabel = msg.label;
-      if (settingsView.visible()) settingsView.render();
+      this.lastError = '';
       this.progress = {};
       ui.renderAsrStatus();
+      if (settingsView.visible()) settingsView.render();
+      this.pump(); // モデル待ちだった記録を処理
+    } else if (msg.type === 'loadError') {
+      this.fail(msg.message);
+      const cb = this.callbacks.get(msg.id);
+      this.callbacks.delete(msg.id);
+      if (cb) cb(msg);
     } else if (msg.type === 'result' || msg.type === 'error') {
       const cb = this.callbacks.get(msg.id);
       this.callbacks.delete(msg.id);
-      if (msg.type === 'error' && msg.id === undefined) {
-        this.state = 'error';
-        this.lastError = msg.message + (settings.host === 'hf' && /fetch|取得|network|Failed/i.test(msg.message) ? '（中国国内では「モデルの配布元」を hf-mirror.com にしてください）' : '');
-        ui.renderAsrStatus();
-      }
       if (cb) cb(msg);
     }
+  },
+
+  /** モデルの取得・読込に失敗 */
+  fail(message) {
+    this.state = 'error';
+    this.progress = {};
+    const m = String(message || '');
+    if (!navigator.onLine) this.lastError = 'オフラインのためモデルをダウンロードできません。電波のある場所で再試行してください';
+    else if (/fetch|network|load failed|取得/i.test(m)) {
+      this.lastError = `モデルをダウンロードできませんでした（${HOSTS[settings.host].label}）。`
+        + (settings.host === 'hf' ? '中国国内では「モデルの配布元」を hf-mirror.com にしてください' : '通信状況を確認して再試行してください');
+    } else this.lastError = `モデルを読み込めませんでした：${m}`;
+    ui.renderAsrStatus();
+    if (settingsView.visible()) settingsView.render();
   },
 
   loadPercent() {
@@ -382,14 +393,17 @@ const transcriber = {
     return total ? Math.floor((loaded / total) * 100) : 0;
   },
 
+  isReady() { return this.state === 'ready' && this.loadedKey === settings.model; },
+
   async preload() {
     if (this.current !== null) return; // 処理中は次の処理の開始時に読み込む
     this.ensureWorker();
-    if (this.loadedKey === wantKey() || this.state === 'loading') return;
-    this.fromCache = await modelCache.isCached(settings.model, effectiveMode());
+    if (this.isReady() || this.state === 'loading') return;
+    this.fromCache = await modelCache.isCached(settings.model);
     this.state = 'loading';
+    this.progress = {};
     ui.renderAsrStatus();
-    this.worker.postMessage({ type: 'load', model: settings.model, mode: effectiveMode(), host: HOSTS[settings.host].url });
+    this.worker.postMessage({ type: 'load', model: settings.model, host: HOSTS[settings.host].url });
   },
 
   enqueue(id) {
@@ -400,7 +414,8 @@ const transcriber = {
   },
 
   async pump() {
-    if (this.current !== null || !this.queue.length) return;
+    // モデル取得に失敗している間は待つ（再試行で読み込めたら ready から再開）
+    if (this.current !== null || !this.queue.length || this.state === 'error') return;
     const id = this.queue.shift();
     this.current = id;
     ui.renderAsrStatus();
@@ -415,15 +430,16 @@ const transcriber = {
       if (!blob) throw new Error('音声が見つかりません');
       const audio = await decodeTo16k(blob);
       this.ensureWorker();
-      if (this.loadedKey !== wantKey() && this.state !== 'loading') {
-        this.fromCache = await modelCache.isCached(settings.model, effectiveMode());
+      if (!this.isReady() && this.state !== 'loading') {
+        this.fromCache = await modelCache.isCached(settings.model);
         this.state = 'loading';
+        this.progress = {};
         ui.renderAsrStatus();
       }
       const res = await new Promise((resolve) => {
         this.callbacks.set(id, resolve);
         this.worker.postMessage({
-          type: 'transcribe', id, model: settings.model, mode: effectiveMode(),
+          type: 'transcribe', id, model: settings.model,
           host: HOSTS[settings.host].url, lang: memo.lang || 'ja', audio,
         }, [audio.buffer]);
       });
@@ -436,6 +452,11 @@ const transcriber = {
         latest.asrModel = settings.model;
         latest.asrMs = res.ms;
         latest.asrLabel = res.label;
+        delete latest.asrError;
+      } else if (res.type === 'loadError') {
+        // 音声ではなくモデルの問題：記録は「待ち」に戻し、モデルが準備できたら処理する
+        latest.status = 'pending';
+        this.queue.unshift(id);
       } else {
         latest.status = 'error';
         latest.asrError = res.message;
@@ -459,11 +480,7 @@ const transcriber = {
   },
 };
 
-// SenseVoice は常に CPU（int8 モデルは GPU では速くならないため）
-const effectiveMode = () => (engineOf(settings.model) === 'sensevoice' ? 'cpu' : settings.accel);
-const wantKey = () => `${settings.model}|${effectiveMode()}`;
-
-/* モデルのキャッシュ（transformers.js が Cache Storage 'transformers-cache' に保存する） */
+/* モデルのキャッシュ（Whisper: 'transformers-cache' / SenseVoice: 'sensevoice-cache'） */
 const modelCache = {
   async sensevoiceCached() {
     if (!('caches' in window)) return false;
@@ -479,19 +496,23 @@ const modelCache = {
       return (await c.keys()).filter((r) => r.url.includes(`/${model}/`));
     } catch { return []; }
   },
-  /** mode: 'cpu' は int8、'webgpu' は fp16/q4 のファイル。省略時はどちらか */
-  async isCached(model, mode) {
+  async isCached(model) {
     if (engineOf(model) === 'sensevoice') return this.sensevoiceCached();
     const urls = (await this.files(model)).map((r) => r.url);
-    const has = (re) => urls.some((u) => re.test(u));
-    const cpu = has(/encoder_model_quantized\.onnx/) && has(/decoder_model_merged_quantized\.onnx/);
-    const gpu = has(/encoder_model_(fp16|q4)\.onnx/) && has(/decoder_model_merged_q4\.onnx/);
-    return mode === 'cpu' ? cpu : mode === 'webgpu' ? gpu : (cpu || gpu);
+    return urls.some((u) => /encoder_model_quantized\.onnx/.test(u)) && urls.some((u) => /decoder_model_merged_quantized\.onnx/.test(u));
   },
   async remove(model) {
     if (engineOf(model) === 'sensevoice') { await caches.delete('sensevoice-cache'); return; }
     const c = await caches.open('transformers-cache');
     for (const r of await this.files(model)) await c.delete(r);
+  },
+  /** 旧版の GPU 用モデルファイル（fp16/q4）を削除して容量を空ける */
+  async removeGpuFiles() {
+    if (!('caches' in window)) return;
+    try {
+      const c = await caches.open('transformers-cache');
+      for (const r of await c.keys()) if (/_(fp16|q4|q4f16)\.onnx$/.test(r.url)) await c.delete(r);
+    } catch { /* ignore */ }
   },
 };
 
@@ -536,21 +557,42 @@ const ui = {
 
   renderAsrStatus() {
     const t = transcriber;
-    const n = t.queue.length + (t.current !== null ? 1 : 0);
+    const waiting = t.queue.length + (t.current !== null ? 1 : 0);
+    const name = (MODELS[settings.model] || {}).label || '';
     let txt;
-    if (t.state === 'loading') txt = t.fromCache ? `モデルを端末から読込中 ${t.loadPercent()}%` : `モデルをダウンロード中 ${t.loadPercent()}%`;
-    else if (t.state === 'error') txt = '文字起こしエラー';
-    else if (n) txt = `文字起こし中（残り${n}件）`;
-    else if (t.loadedKey === wantKey()) txt = '文字起こし準備OK';
-    else txt = 'モデル未取得（設定でダウンロード）';
-    $('#asrStatus').textContent = txt;
-    $('#asrStatus').title = t.loadedLabel || '';
-    $('#asrStatus').hidden = !txt;
+    let cls;
+    let detail;
+    if (t.state === 'loading') {
+      txt = t.fromCache ? `モデル読込中 ${t.loadPercent()}%` : `モデルをダウンロード中 ${t.loadPercent()}%`;
+      cls = 'busy';
+      detail = t.fromCache ? `端末から読込中…（通信なし） ${t.loadPercent()}%` : `ダウンロード中… ${t.loadPercent()}%（Wi-Fi推奨）`;
+    } else if (t.state === 'error') {
+      txt = waiting ? `モデル取得失敗・${waiting}件待ち` : 'モデル取得失敗';
+      cls = 'err';
+      detail = `${t.lastError}`;
+    } else if (t.isReady()) {
+      txt = waiting ? `文字起こし中（残り${waiting}件）` : '文字起こし準備OK';
+      cls = waiting ? 'busy' : 'ok';
+      detail = `読込済み：${name}（${t.loadedLabel}・オフラインでも使えます）`;
+    } else {
+      txt = waiting ? `モデル未ダウンロード・${waiting}件待ち` : 'モデル未ダウンロード';
+      cls = 'warn';
+      detail = `未ダウンロード：${name}`;
+    }
+    const pill = $('#asrStatus');
+    pill.textContent = txt;
+    pill.className = `asr-pill ${cls}`;
+    pill.title = detail;
+    pill.hidden = false;
     const ms = $('#modelStatus');
     if (ms) {
-      ms.textContent = t.state === 'loading' ? (t.fromCache ? `端末から読込中…（通信なし） ${t.loadPercent()}%` : `ダウンロード中… ${t.loadPercent()}%`)
-        : t.state === 'error' ? `エラー: ${t.lastError || ''}`
-          : t.loadedKey === wantKey() ? `読込済み・${t.loadedLabel}で処理（オフラインでも使えます）` : '未読込';
+      ms.textContent = detail;
+      ms.className = `hint model-status ${cls}`;
+    }
+    const btn = $('#loadModel');
+    if (btn) {
+      btn.disabled = t.state === 'loading' || t.isReady();
+      btn.textContent = t.state === 'error' ? 'モデルのダウンロードを再試行' : t.isReady() ? 'モデル読込済み' : 'モデルをダウンロード／読込';
     }
   },
 
@@ -641,7 +683,7 @@ const ui = {
 };
 
 function statusText(m) {
-  if (m.status === 'pending') return '文字起こし待ち…';
+  if (m.status === 'pending') return transcriber.state === 'error' || (!transcriber.isReady() && transcriber.state !== 'loading') ? '文字起こし待ち（モデル未準備）' : '文字起こし待ち…';
   if (m.status === 'transcribing') return '文字起こし中…';
   if (m.status === 'error') return '文字起こし失敗';
   return '';
@@ -1008,37 +1050,21 @@ const settingsView = {
       l.append(r, span);
       hb.appendChild(l);
     });
-    const ab = $('#accelInputs');
-    ab.innerHTML = '';
-    [['cpu', 'CPU（複数コアで並列計算）', `標準。${window.crossOriginIsolated ? '並列計算 有効' : '並列計算 無効（ページを開き直すと有効になります）'}`],
-      ['webgpu', 'GPU（WebGPU・試験的）', `${'gpu' in navigator ? 'この端末はWebGPU対応' : 'この端末・ブラウザはWebGPU非対応'}。Whisperのみ対象（SenseVoiceは常にCPU）。GPU用のモデルを追加でダウンロード（約300〜410MB）。失敗時は自動でCPUに切替`]]
-      .forEach(([id, label, note]) => {
-        const l = document.createElement('label');
-        l.className = 'check';
-        const r = document.createElement('input');
-        r.type = 'radio';
-        r.name = 'accel';
-        r.value = id;
-        r.checked = settings.accel === id;
-        const span = document.createElement('span');
-        span.innerHTML = '<b></b><small></small>';
-        span.firstChild.textContent = label;
-        span.lastChild.textContent = note;
-        l.append(r, span);
-        ab.appendChild(l);
-      });
     ui.renderAsrStatus();
     this.storageInfo();
   },
   visible() { return $('#view-settings').classList.contains('active'); },
   async storageInfo() {
+    // ブラウザの使用量（storage.estimate）は Safari では削除後すぐに減らないため、アプリ側で集計する
     const memos = await db.allMemos();
-    let txt = `記録 ${memos.length} 件`;
-    if (navigator.storage && navigator.storage.estimate) {
-      const e = await navigator.storage.estimate();
-      txt += ` / 使用量 約${Math.round(e.usage / 1024 / 1024)}MB（モデル含む）`;
-    }
-    $('#storageInfo').textContent = `${txt}。削除前に必ずCSV/ZIPを出力してください。（アプリ版 ${APP_VERSION}）`;
+    const audioMB = memos.reduce((a, m) => a + (m.audioSize || 0), 0) / 1024 / 1024;
+    const cachedModels = [];
+    for (const [id, info] of Object.entries(MODELS)) if (await modelCache.isCached(id)) cachedModels.push(info);
+    const modelMB = cachedModels.reduce((a, i) => a + i.sizeMB, 0);
+    const fmt = (mb) => (mb < 10 ? mb.toFixed(1) : Math.round(mb));
+    $('#storageInfo').textContent = `記録 ${memos.length} 件（音声 約${fmt(audioMB)}MB）／ モデル 約${modelMB}MB`
+      + `${cachedModels.length ? `（${cachedModels.map((i) => i.label.replace(/（.*$/, '')).join('・')}）` : ''}`
+      + `。削除前に必ずCSV/ZIPを出力してください。（アプリ版 ${APP_VERSION}）`;
 
     // 保存データが消されにくい状態かを表示
     const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -1055,13 +1081,12 @@ const settingsView = {
 $('#settingsForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target;
-  const prevKey = wantKey();
+  const prevModel = settings.model;
   settings = {
     vehicleId: f.vehicleId.value.trim(),
     evaluator: f.evaluator.value.trim(),
     categories: Array.from({ length: 6 }, (_, i) => f[`cat${i}`].value.trim()),
     model: f.model.value || DEFAULT_MODEL,
-    accel: f.accel.value === 'webgpu' ? 'webgpu' : 'cpu',
     host: HOSTS[f.host.value] ? f.host.value : 'hf',
     lang: settings.lang,
     useGps: f.useGps.checked,
@@ -1072,14 +1097,15 @@ $('#settingsForm').addEventListener('submit', (e) => {
   ui.renderMeta();
   ui.renderCategories();
   ui.renderAsrStatus();
-  const changed = wantKey() !== prevKey;
+  const changed = settings.model !== prevModel;
   toast(changed ? '設定を保存しました。モデルを読み込み直します' : '設定を保存しました');
   if (changed) transcriber.preload();
 });
 
-$('#loadModel').addEventListener('click', () => {
+$('#loadModel').addEventListener('click', async () => {
+  const cached = await modelCache.isCached(settings.model);
+  toast(cached ? 'モデルを端末から読み込みます' : 'モデルをダウンロードします（Wi-Fi推奨）', 3000);
   transcriber.preload();
-  toast('モデルを準備しています（初回はWi-Fi推奨）', 3000);
 });
 
 $('#clearAll').addEventListener('click', async () => {
@@ -1104,7 +1130,8 @@ ui.renderAsrStatus();
 gps.start();
 requestWakeLock();
 // 一度ダウンロード済みのモデルなら裏で読み込んでおく（キャッシュから読むので通信は発生しない）
-modelCache.isCached(settings.model, settings.accel).then((cached) => { if (cached) transcriber.preload(); });
+modelCache.removeGpuFiles(); // 旧版の GPU 用ファイルを掃除
+modelCache.isCached(settings.model).then((cached) => { if (cached) transcriber.preload(); });
 transcriber.resumePending(); // 前回終わらなかった文字起こしを再開
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
