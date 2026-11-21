@@ -6,32 +6,35 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 
 /* =========================================================
  * 設定
  * ======================================================= */
 const SETTINGS_KEY = 'voicememo.settings.v1';
 const MODELS = {
-  'sensevoice-small': { engine: 'sensevoice', sizeMB: 240, label: 'SenseVoice（FunASR・約240MB）', note: '推奨。中国語・日本語とも高精度で高速（数秒の音声を1秒前後）。CPUで処理' },
-  'onnx-community/whisper-small': { engine: 'whisper', sizeMB: 250, label: 'Whisper small（OpenAI・約250MB）', note: '高精度。1件あたり数秒〜十数秒' },
-  'onnx-community/whisper-base': { engine: 'whisper', sizeMB: 77, label: 'Whisper base（OpenAI・約80MB）', note: '軽量だが誤変換が多い' },
+  'sensevoice-small': { engine: 'sensevoice', sizeMB: 240, get label() { return t('modelSv'); }, get note() { return t('modelSvNote'); } },
+  'onnx-community/whisper-small': { engine: 'whisper', sizeMB: 250, get label() { return t('modelWs'); }, get note() { return t('modelWsNote'); } },
+  'onnx-community/whisper-base': { engine: 'whisper', sizeMB: 77, get label() { return t('modelWb'); }, get note() { return t('modelWbNote'); } },
 };
 const DEFAULT_MODEL = 'sensevoice-small';
 // モデルの配布元（中国国内では huggingface.co に接続できないためミラーを選ぶ）
 const HOSTS = {
-  hf: { label: 'Hugging Face', note: '日本など', url: 'https://huggingface.co' },
-  mirror: { label: 'hf-mirror.com', note: '中国国内向けミラー', url: 'https://hf-mirror.com' },
+  hf: { label: 'Hugging Face', get note() { return t('hostHfNote'); }, url: 'https://huggingface.co' },
+  mirror: { label: 'hf-mirror.com', get note() { return t('hostMirrorNote'); }, url: 'https://hf-mirror.com' },
 };
-const LANGS = { ja: { label: '日本語', short: '日', csv: '日本語' }, zh: { label: '中文', short: '中', csv: '中国語' } };
+// 録音（文字起こし）の言語。表示言語（uiLang）とは別
+const LANGS = { ja: { label: '日本語', get csv() { return t('csvLangJa'); } }, zh: { label: '中文', get csv() { return t('csvLangZh'); } } };
 const engineOf = (model) => (MODELS[model] || MODELS[DEFAULT_MODEL]).engine;
 const DEFAULT_SETTINGS = {
   vehicleId: '',
   evaluator: '',
-  categories: ['Take Over', 'ナビルート無視', '交通ルール無視', '車両挙動', '乗り心地', 'その他'],
+  // 初回起動時の表示言語に合わせた初期値（日本語端末なら日本語、中国語端末なら中国語）
+  categories: [...I18N[/^zh/i.test(navigator.language || '') ? 'zh' : 'ja'].defaultCats],
   model: DEFAULT_MODEL,
   host: 'hf',
   lang: 'ja',   // 録音時の言語（録音ボタン横でワンタップ切替）
+  uiLang: /^zh/i.test(navigator.language || '') ? 'zh' : 'ja', // 表示言語
   useGps: true,
   keepAwake: true,
 };
@@ -47,6 +50,7 @@ function loadSettings() {
     delete merged.accel; // 旧版の CPU/GPU 設定（廃止）
     if (!HOSTS[merged.host]) merged.host = 'hf';
     if (!LANGS[merged.lang]) merged.lang = 'ja';
+    if (!UI_LANGS[merged.uiLang]) merged.uiLang = DEFAULT_SETTINGS.uiLang;
     return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -57,6 +61,10 @@ function saveSettings(s) {
 }
 
 let settings = loadSettings();
+uiLang = settings.uiLang;
+const tr = (key, params) => t(key, params); // 変数名 t と衝突する箇所で使う別名
+/** ワーカーが返す「CPU 4スレッド」等を表示言語に合わせる */
+const threadLabel = (label) => { const n = /(\d+)/.exec(label || ''); return n ? t('threads', { n: n[1] }) : (label || ''); };
 
 /* =========================================================
  * IndexedDB（記録 + 音声Blob）
@@ -289,7 +297,7 @@ const mic = {
     this.pending = navigator.mediaDevices.getUserMedia({ audio: true })
       .then((st) => { this.stream = st; return st; })
       .catch((err) => {
-        if (err.name === 'NotAllowedError') toast('マイクの使用が許可されていません（設定 > アプリ > Safari > マイク）', 4000);
+        if (err.name === 'NotAllowedError') toast(t('tMicDenied'), 4000);
         throw err;
       })
       .finally(() => { this.pending = null; });
@@ -310,7 +318,7 @@ const recorder = {
 
   start(category) {
     if (this.active) return;
-    if (!navigator.mediaDevices || !window.MediaRecorder) { toast('このブラウザは録音に対応していません'); return; }
+    if (!navigator.mediaDevices || !window.MediaRecorder) { toast(t('tNoRecorder')); return; }
     const s = { category, lang: settings.lang, start: new Date(), end: null, gps: gps.current(), chunks: [], mr: null, done: null, stopRequested: false };
     this.active = s;
     ui.recordingStarted();
@@ -349,9 +357,9 @@ const recorder = {
     if (s.done) await Promise.race([s.done, sleep(2500)]);
 
     const durMs = s.end - s.start;
-    if (durMs < MIN_RECORD_MS) { toast('録音ボタンは押し続けてください'); return; }
+    if (durMs < MIN_RECORD_MS) { toast(t('tHold')); return; }
     const blob = s.chunks.length ? new Blob(s.chunks, { type: s.mr.mimeType || s.chunks[0].type }) : null;
-    if (!blob) { toast('録音できませんでした。もう一度お試しください', 3000); }
+    if (!blob) { toast(t('tRecFail'), 3000); }
 
     const memo = {
       vehicleId: settings.vehicleId,
@@ -379,7 +387,7 @@ const recorder = {
       ui.flashRecent();
       list.refreshRow(memo);
     } catch (err) {
-      toast('保存に失敗しました: ' + (err && err.message), 4000);
+      toast(t('tSaveFail', { m: err && err.message }), 4000);
     }
   },
 };
@@ -411,7 +419,7 @@ const transcriber = {
     this.workerEngine = engine;
     this.worker = new Worker(engine === 'sensevoice' ? 'sensevoice-worker.js?v=12' : 'whisper-worker.js?v=12', { type: 'module' });
     this.worker.onmessage = (e) => this.onMessage(e.data);
-    this.worker.onerror = (e) => this.fail(e.message || 'ワーカーの起動に失敗しました');
+    this.worker.onerror = (e) => this.fail(e.message || t('errWorker'));
   },
 
   onMessage(msg) {
@@ -445,11 +453,11 @@ const transcriber = {
     this.state = 'error';
     this.progress = {};
     const m = String(message || '');
-    if (!navigator.onLine) this.lastError = 'オフラインのためモデルをダウンロードできません。電波のある場所で再試行してください';
+    if (!navigator.onLine) this.lastError = t('errOffline');
     else if (/fetch|network|load failed|取得/i.test(m)) {
-      this.lastError = `モデルをダウンロードできませんでした（${HOSTS[settings.host].label}）。`
-        + (settings.host === 'hf' ? '中国国内では「モデルの配布元」を hf-mirror.com にしてください' : '通信状況を確認して再試行してください');
-    } else this.lastError = `モデルを読み込めませんでした：${m}`;
+      this.lastError = t('errDownload', { host: HOSTS[settings.host].label })
+        + (settings.host === 'hf' ? t('errHintMirror') : t('errHintRetry'));
+    } else this.lastError = t('errLoad', { m });
     ui.renderAsrStatus();
     if (settingsView.visible()) settingsView.render();
   },
@@ -495,7 +503,7 @@ const transcriber = {
       list.refreshRow(memo);
 
       const blob = await db.getAudio(id);
-      if (!blob) throw new Error('音声が見つかりません');
+      if (!blob) throw new Error(t('tAudioMissing'));
       const audio = await decodeTo16k(blob);
       this.ensureWorker();
       if (!this.isReady() && this.state !== 'loading') {
@@ -618,9 +626,9 @@ const ui = {
 
   renderMeta() {
     const parts = [];
-    if (settings.vehicleId) parts.push(`車両 ${settings.vehicleId}`);
+    if (settings.vehicleId) parts.push(t('metaVehicle', { v: settings.vehicleId }));
     if (settings.evaluator) parts.push(settings.evaluator);
-    $('#metaInfo').textContent = parts.join(' / ') || '車両ID未設定';
+    $('#metaInfo').textContent = parts.join(' / ') || t('metaNone');
   },
 
   renderAsrStatus() {
@@ -631,21 +639,21 @@ const ui = {
     let cls;
     let detail;
     if (t.state === 'loading') {
-      txt = t.fromCache ? `モデル読込中 ${t.loadPercent()}%` : `モデルをダウンロード中 ${t.loadPercent()}%`;
+      txt = tr(t.fromCache ? 'stLoadCache' : 'stDownload', { p: t.loadPercent() });
       cls = 'busy';
-      detail = t.fromCache ? `端末から読込中…（通信なし） ${t.loadPercent()}%` : `ダウンロード中… ${t.loadPercent()}%（Wi-Fi推奨）`;
+      detail = tr(t.fromCache ? 'stDetailCache' : 'stDetailDownload', { p: t.loadPercent() });
     } else if (t.state === 'error') {
-      txt = waiting ? `モデル取得失敗・${waiting}件待ち` : 'モデル取得失敗';
+      txt = waiting ? tr('stFailWait', { n: waiting }) : tr('stFail');
       cls = 'err';
       detail = `${t.lastError}`;
     } else if (t.isReady()) {
-      txt = waiting ? `文字起こし中（残り${waiting}件）` : '文字起こし準備OK';
+      txt = waiting ? tr('stBusy', { n: waiting }) : tr('stReady');
       cls = waiting ? 'busy' : 'ok';
-      detail = `読込済み：${name}（${t.loadedLabel}・オフラインでも使えます）`;
+      detail = tr('stDetailReady', { name, label: threadLabel(t.loadedLabel) });
     } else {
-      txt = waiting ? `モデル未ダウンロード・${waiting}件待ち` : 'モデル未ダウンロード';
+      txt = waiting ? tr('stMissingWait', { n: waiting }) : tr('stMissing');
       cls = 'warn';
-      detail = `未ダウンロード：${name}`;
+      detail = tr('stDetailMissing', { name });
     }
     const pill = $('#asrStatus');
     pill.textContent = txt;
@@ -660,7 +668,7 @@ const ui = {
     const btn = $('#loadModel');
     if (btn) {
       btn.disabled = t.state === 'loading' || t.isReady();
-      btn.textContent = t.state === 'error' ? 'モデルのダウンロードを再試行' : t.isReady() ? 'モデル読込済み' : 'モデルをダウンロード／読込';
+      btn.textContent = tr(t.state === 'error' ? 'btnRetry' : t.isReady() ? 'btnLoaded' : 'btnLoad');
     }
   },
 
@@ -672,7 +680,7 @@ const ui = {
       b.className = 'cat-btn' + (this.selected === i ? ' selected' : '');
       b.innerHTML = '<span class="num"></span><span class="name"></span>';
       b.firstChild.textContent = i + 1;
-      b.lastChild.textContent = name || `(未設定${i + 1})`;
+      b.lastChild.textContent = name || t('catUnset', { n: i + 1 });
       b.disabled = !name;
       b.addEventListener('click', () => {
         if (recorder.active) return;
@@ -691,16 +699,16 @@ const ui = {
     const btn = $('#recBtn');
     if (this.selected === null) {
       btn.disabled = true;
-      $('#recLabel').textContent = '種類を選択してください';
+      $('#recLabel').textContent = t('recSelect');
     } else {
       btn.disabled = false;
-      $('#recLabel').textContent = '押している間 録音';
+      $('#recLabel').textContent = t('recHold');
     }
   },
 
   recordingStarted() {
     $('#recBtn').classList.add('recording');
-    $('#recLabel').textContent = '録音中… 離すと停止';
+    $('#recLabel').textContent = t('recRecording');
     const t0 = Date.now();
     $('#recTimer').textContent = '0:00';
     this.timerId = setInterval(() => {
@@ -730,7 +738,7 @@ const ui = {
     const el = $('#recent');
     el.textContent = '';
     if (!memos.length) {
-      el.textContent = '種類を選び、赤いボタンを押している間に話してください。離すと保存し、自動で文字起こしします。';
+      el.textContent = t('recentEmpty');
       return;
     }
     for (const m of memos) {
@@ -741,7 +749,7 @@ const ui = {
       head.textContent = `${fmtTime(m.start)} ${m.category}`;
       const body = document.createElement('span');
       body.className = 'recent-text';
-      body.textContent = statusText(m) || m.text || '(テキストなし)';
+      body.textContent = statusText(m) || m.text || t('noText');
       row.append(head, body);
       el.appendChild(row);
     }
@@ -758,9 +766,9 @@ const ui = {
 };
 
 function statusText(m) {
-  if (m.status === 'pending') return transcriber.state === 'error' || (!transcriber.isReady() && transcriber.state !== 'loading') ? '文字起こし待ち（モデル未準備）' : '文字起こし待ち…';
-  if (m.status === 'transcribing') return '文字起こし中…';
-  if (m.status === 'error') return '文字起こし失敗';
+  if (m.status === 'pending') return transcriber.state === 'error' || (!transcriber.isReady() && transcriber.state !== 'loading') ? t('pendingNoModel') : t('pending');
+  if (m.status === 'transcribing') return t('transcribing');
+  if (m.status === 'error') return t('failed');
   return '';
 }
 
@@ -769,7 +777,7 @@ function renderLang() {
   const b = $('#langBtn');
   b.textContent = LANGS[settings.lang].label;
   b.className = `lang-btn lang-${settings.lang}`;
-  b.setAttribute('aria-label', `録音言語: ${LANGS[settings.lang].label}（タップで切替）`);
+  b.setAttribute('aria-label', t('langAria', { l: LANGS[settings.lang].label }));
 }
 $('#langBtn').addEventListener('click', () => {
   if (recorder.active) return;
@@ -826,7 +834,7 @@ const list = {
     const body = $('#memoBody');
     body.innerHTML = '';
     $('#emptyMsg').style.display = memos.length ? 'none' : 'block';
-    $('#count').textContent = `セッション${session.current()}・${memos.length} 件`;
+    $('#count').textContent = t('count', { s: session.current(), n: memos.length });
     // 出力できるデータがあるボタンだけ強調表示（ないときはトーンダウンして押せない）
     const setExport = (sel, ok) => {
       const b = $(sel);
@@ -878,7 +886,7 @@ const list = {
     tm.innerHTML = '<div></div><div></div><div class="dur"></div>';
     tm.children[0].textContent = fmtTime(m.start);
     tm.children[1].textContent = fmtTime(m.end);
-    tm.children[2].textContent = `${m.durationSec.toFixed(1)}秒`;
+    tm.children[2].textContent = t('sec', { s: m.durationSec.toFixed(1) });
     tm.title = `${fmtDateTime(m.start)} 〜 ${fmtDateTime(m.end)}`;
 
     const textCell = td('col-text');
@@ -908,11 +916,11 @@ const list = {
       return b;
     };
     if (m.hasAudio) {
-      const pb = mkBtn('▶ 再生', '', () => this.play(m.id, pb));
-      mkBtn('再変換', 'redo', async () => {
+      const pb = mkBtn(t('play'), '', () => this.play(m.id, pb));
+      mkBtn(t('redo'), 'redo', async () => {
         const cur = await db.getMemo(m.id);
         if (!cur) return;
-        if (cur.edited && !confirm('手で修正したテキストを文字起こし結果で上書きします。よろしいですか？')) return;
+        if (cur.edited && !confirm(t('confirmRedo'))) return;
         cur.edited = false;
         cur.status = 'pending';
         await db.updateMemo(cur);
@@ -926,11 +934,11 @@ const list = {
       a.href = `https://maps.apple.com/?ll=${m.lat},${m.lng}&q=${encodeURIComponent(m.category)}`;
       a.target = '_blank';
       a.rel = 'noopener';
-      a.textContent = '地図';
+      a.textContent = t('map');
       oc.appendChild(a);
     }
-    mkBtn('削除', 'del', async () => {
-      if (!confirm(`No.${memoNo(m)}（${m.category} ${fmtTime(m.start)}）を削除しますか？`)) return;
+    mkBtn(t('del'), 'del', async () => {
+      if (!confirm(t('confirmDel', { no: memoNo(m), cat: m.category, time: fmtTime(m.start) }))) return;
       await db.deleteMemo(m.id);
       this.render();
     });
@@ -945,8 +953,8 @@ const list = {
     if (!r) return;
     const busy = m.status === 'pending' || m.status === 'transcribing';
     if (document.activeElement !== r.ta) r.ta.value = m.text || '';
-    r.ta.placeholder = busy ? '' : '(テキストなし) タップして入力';
-    r.statusEl.textContent = m.status === 'error' ? `文字起こし失敗：${m.asrError || ''}` : statusText(m);
+    r.ta.placeholder = busy ? '' : t('textPh');
+    r.statusEl.textContent = m.status === 'error' ? t('failedMsg', { m: m.asrError || '' }) : statusText(m);
     r.statusEl.hidden = !r.statusEl.textContent;
     r.statusEl.classList.toggle('err', m.status === 'error');
     requestAnimationFrame(r.fit);
@@ -965,7 +973,7 @@ const list = {
       a.setAttribute('playsinline', '');
       a.preload = 'auto';
       a.addEventListener('ended', () => this.stopPlayback());
-      a.addEventListener('error', () => { toast('この音声は再生できません'); this.stopPlayback(); });
+      a.addEventListener('error', () => { toast(t('tCantPlay')); this.stopPlayback(); });
       document.body.appendChild(a);
       this.player = a;
     }
@@ -974,7 +982,7 @@ const list = {
 
   stopPlayback() {
     if (this.player) this.player.pause();
-    if (this.playingBtn) this.playingBtn.textContent = '▶ 再生';
+    if (this.playingBtn) this.playingBtn.textContent = t('play');
     this.playingBtn = null;
   },
 
@@ -983,12 +991,12 @@ const list = {
     if (this.playingBtn === btn) { this.stopPlayback(); return; }
     this.stopPlayback();
     const url = this.urls.get(id);
-    if (!url) { toast('音声が見つかりません'); return; }
+    if (!url) { toast(t('tAudioMissing')); return; }
     const a = this.getPlayer();
     a.src = url;
     this.playingBtn = btn;
-    btn.textContent = '■ 停止';
-    a.play().catch((e) => { toast(`再生できません: ${e.name}`); this.stopPlayback(); });
+    btn.textContent = t('stop');
+    a.play().catch((e) => { toast(t('tPlayErr', { m: e.name })); this.stopPlayback(); });
   },
 };
 
@@ -1001,7 +1009,7 @@ function csvCell(v) {
 }
 
 function buildCsv(memos) {
-  const header = ['評価日', 'セッション', 'No', '車両ID', '評価者', '種類', '言語', '録音開始', '録音終了', '録音時間(秒)', '緯度', '経度', 'テキスト', '音声ファイル'];
+  const header = t('csvHeader');
   const rows = memos.map((m) => [
     ymd(m.start, '/'), m.sessionNo || 1, memoNo(m), m.vehicleId, m.evaluator, m.category, (LANGS[m.lang] || LANGS.ja).csv,
     fmtDateTime(m.start), fmtDateTime(m.end), m.durationSec.toFixed(1),
@@ -1040,9 +1048,9 @@ function exportBaseName() {
 async function memosForExport() {
   // 評価日 → セッション → No の順
   const memos = (await db.allMemos()).sort((a, b) => ymd(a.start).localeCompare(ymd(b.start)) || (a.sessionNo || 1) - (b.sessionNo || 1) || memoNo(a) - memoNo(b));
-  if (!memos.length) { toast('記録がありません'); return null; }
+  if (!memos.length) { toast(t('tNoRecords')); return null; }
   const busy = memos.filter((m) => m.status === 'pending' || m.status === 'transcribing').length;
-  if (busy && !confirm(`文字起こしが終わっていない記録が${busy}件あります。このまま出力しますか？`)) return null;
+  if (busy && !confirm(t('confirmExportBusy', { n: busy }))) return null;
   return memos;
 }
 
@@ -1055,7 +1063,7 @@ $('#exportCsv').addEventListener('click', async () => {
 $('#exportZip').addEventListener('click', async () => {
   const memos = await memosForExport();
   if (!memos) return;
-  toast('ZIPを作成中…');
+  toast(t('tZip'));
   const enc = new TextEncoder();
   const files = [{ name: 'memo.csv', data: enc.encode(buildCsv(memos)), date: new Date() }];
   for (const m of memos) {
@@ -1080,7 +1088,7 @@ const settingsView = {
     box.innerHTML = '';
     settings.categories.forEach((c, i) => {
       const l = document.createElement('label');
-      l.textContent = `種類 ${i + 1}`;
+      l.textContent = t('catLabel', { n: i + 1 });
       const inp = document.createElement('input');
       inp.type = 'text';
       inp.name = `cat${i}`;
@@ -1109,18 +1117,18 @@ const settingsView = {
         if (!cached) return;
         const tagEl = document.createElement('small');
         tagEl.className = 'cached';
-        tagEl.textContent = '✓ ダウンロード済み（端末に保存）';
+        tagEl.textContent = t('cached');
         span.appendChild(tagEl);
         if (id !== settings.model) {
           const del = document.createElement('button');
           del.type = 'button';
           del.className = 'icon-btn del small';
-          del.textContent = 'このモデルを削除';
+          del.textContent = t('delModel');
           del.addEventListener('click', async (ev) => {
             ev.preventDefault();
-            if (!confirm(`${info.label} を端末から削除しますか？`)) return;
+            if (!confirm(t('confirmDelModel', { name: info.label }))) return;
             await modelCache.remove(id);
-            toast('モデルを削除しました');
+            toast(t('tModelDeleted'));
             this.render();
           });
           span.appendChild(del);
@@ -1156,9 +1164,10 @@ const settingsView = {
     for (const [id, info] of Object.entries(MODELS)) if (await modelCache.isCached(id)) cachedModels.push(info);
     const modelMB = cachedModels.reduce((a, i) => a + i.sizeMB, 0);
     const fmt = (mb) => (mb < 10 ? mb.toFixed(1) : Math.round(mb));
-    $('#storageInfo').textContent = `セッション${session.current()}：記録 ${memos.length} 件（音声 約${fmt(audioMB)}MB）／ モデル 約${modelMB}MB`
-      + `${cachedModels.length ? `（${cachedModels.map((i) => i.label.replace(/（.*$/, '')).join('・')}）` : ''}`
-      + `。削除前に必ずCSV/ZIPを出力してください。（アプリ版 ${APP_VERSION}）`;
+    $('#storageInfo').textContent = t('storage', {
+      s: session.current(), n: memos.length, a: fmt(audioMB), m: modelMB, v: APP_VERSION,
+      models: cachedModels.length ? `（${cachedModels.map((i) => i.label.replace(/（.*$/, '')).join('・')}）` : '',
+    });
 
     // 保存データが消されにくい状態かを表示
     const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -1166,8 +1175,8 @@ const settingsView = {
     try { persisted = !!(navigator.storage && navigator.storage.persisted && await navigator.storage.persisted()); } catch { /* ignore */ }
     const el = $('#persistInfo');
     el.textContent = standalone
-      ? `ホーム画面から起動中：モデル・記録は端末に保持されます${persisted ? '（永続化済み）' : ''}`
-      : '⚠ Safariのタブで使用中：7日間開かないとモデル・記録が自動削除されることがあります。共有ボタン→「ホーム画面に追加」から起動してください。';
+      ? t('persistHome', { p: persisted ? t('persisted') : '' })
+      : t('persistTab');
     el.classList.toggle('warn', !standalone);
   },
 };
@@ -1183,6 +1192,7 @@ $('#settingsForm').addEventListener('submit', (e) => {
     model: f.model.value || DEFAULT_MODEL,
     host: HOSTS[f.host.value] ? f.host.value : 'hf',
     lang: settings.lang,
+    uiLang: settings.uiLang,
     useGps: f.useGps.checked,
     keepAwake: f.keepAwake.checked,
   };
@@ -1192,28 +1202,28 @@ $('#settingsForm').addEventListener('submit', (e) => {
   ui.renderCategories();
   ui.renderAsrStatus();
   const changed = settings.model !== prevModel;
-  toast(changed ? '設定を保存しました。モデルを読み込み直します' : '設定を保存しました');
+  toast(changed ? t('tSavedReload') : t('tSaved'));
   if (changed) transcriber.preload();
 });
 
 $('#resetCats').addEventListener('click', () => {
-  DEFAULT_SETTINGS.categories.forEach((c, i) => { $('#settingsForm')[`cat${i}`].value = c; });
-  toast('初期値を入力しました。「保存」を押すと反映されます', 3000);
+  t('defaultCats').forEach((c, i) => { $('#settingsForm')[`cat${i}`].value = c; });
+  toast(t('tResetCats'), 3000);
 });
 
 $('#loadModel').addEventListener('click', async () => {
   const cached = await modelCache.isCached(settings.model);
-  toast(cached ? 'モデルを端末から読み込みます' : 'モデルをダウンロードします（Wi-Fi推奨）', 3000);
+  toast(cached ? t('tLoadCache') : t('tLoadDownload'), 3000);
   transcriber.preload();
 });
 
 $('#clearAll').addEventListener('click', async () => {
   const nextNo = session.afterClear();
-  if (!confirm(`全ての記録と音声を削除し、本日（${ymd(new Date(), '/')}）のセッション${nextNo}を開始します（No は 1 から）。元に戻せません。よろしいですか？`)) return;
+  if (!confirm(t('confirmClear', { date: ymd(new Date(), '/'), s: nextNo }))) return;
   transcriber.queue.length = 0; // 文字起こし待ちも破棄
   await db.clear();
   session.next();
-  toast(`全記録を削除しました。セッション${session.current()}を開始します`, 3000);
+  toast(t('tCleared', { s: session.current() }), 3000);
   settingsView.storageInfo();
   ui.renderRecent();
 });
@@ -1222,9 +1232,32 @@ document.querySelectorAll('.tabbar button').forEach((b) => {
   b.addEventListener('click', () => ui.showView(b.dataset.view));
 });
 
+/* 表示言語の切替（即時反映） */
+function renderUiLangSeg() {
+  document.querySelectorAll('#uiLangSeg button').forEach((b) => b.classList.toggle('active', b.dataset.uiLang === uiLang));
+}
+function setUiLang(lang) {
+  if (!UI_LANGS[lang] || lang === uiLang) return;
+  uiLang = lang;
+  settings.uiLang = lang;
+  saveSettings(settings);
+  applyI18n();
+  renderUiLangSeg();
+  ui.renderMeta();
+  ui.renderCategories();
+  renderLang();
+  ui.renderRecent();
+  ui.renderAsrStatus();
+  if ($('#view-list').classList.contains('active')) list.render();
+  if (settingsView.visible()) settingsView.render();
+}
+document.querySelectorAll('#uiLangSeg button').forEach((b) => b.addEventListener('click', () => setUiLang(b.dataset.uiLang)));
+
 /* =========================================================
  * 起動
  * ======================================================= */
+applyI18n();
+renderUiLangSeg();
 ui.renderMeta();
 ui.renderCategories();
 renderLang();

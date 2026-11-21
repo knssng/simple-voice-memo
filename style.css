@@ -230,3 +230,8 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 
 /* 出力ボタン：データがないときはトーンダウン */
 .list-actions .btn:disabled { opacity: .35; }
+
+/* 表示言語の切替（セグメント） */
+.seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.seg button { background: var(--panel); border: 0; padding: 12px; font-size: 16px; font-weight: 700; color: var(--muted); }
+.seg button.active { background: var(--accent); color: #0b1220; }

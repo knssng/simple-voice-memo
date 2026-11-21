@@ -12,11 +12,11 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=17">
+  <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
   <header class="topbar">
-    <div class="title">走行評価メモ</div>
+    <div class="title" data-i18n="appTitle">走行評価メモ</div>
     <div class="meta"><span id="metaInfo"></span><button id="asrStatus" class="asr-pill" hidden></button></div>
   </header>
 
@@ -28,7 +28,7 @@
       <div class="rec-row">
         <button id="recBtn" class="rec-btn" disabled>
           <span class="rec-dot"></span>
-          <span id="recLabel">種類を選択してください</span>
+          <span id="recLabel" data-i18n="recSelect">種類を選択してください</span>
           <span id="recTimer" class="rec-timer"></span>
         </button>
         <button id="langBtn" class="lang-btn" type="button">日本語</button>
@@ -38,70 +38,78 @@
     <!-- 一覧 -->
     <section id="view-list" class="view">
       <div class="list-actions">
-        <button id="exportCsv" class="btn" disabled>CSV出力</button>
-        <button id="exportZip" class="btn" disabled>CSV+音声ZIP</button>
+        <button id="exportCsv" class="btn" disabled data-i18n="exportCsv">CSV出力</button>
+        <button id="exportZip" class="btn" disabled data-i18n="exportZip">CSV+音声ZIP</button>
         <span class="count" id="count"></span>
       </div>
       <div class="table-wrap">
         <table class="memo-table">
           <thead>
             <tr>
-              <th>No</th><th>種類</th><th>開始 / 終了</th>
-              <th class="col-text">テキスト</th><th>操作</th>
+              <th data-i18n="thNo">No</th><th data-i18n="thCategory">種類</th><th data-i18n="thTime">開始 / 終了</th>
+              <th class="col-text" data-i18n="thText">テキスト</th><th data-i18n="thOps">操作</th>
             </tr>
           </thead>
           <tbody id="memoBody"></tbody>
         </table>
-        <p class="empty" id="emptyMsg">記録はまだありません</p>
+        <p class="empty" id="emptyMsg" data-i18n="emptyList">記録はまだありません</p>
       </div>
     </section>
 
     <!-- 設定 -->
     <section id="view-settings" class="view">
+      <div class="settings">
+        <h2 data-i18n="hUiLang">表示言語 / 界面语言</h2>
+        <div class="seg" id="uiLangSeg">
+          <button type="button" data-ui-lang="ja">日本語</button>
+          <button type="button" data-ui-lang="zh">中文</button>
+        </div>
+      </div>
       <form id="settingsForm" class="settings">
-        <h2>評価情報</h2>
-        <label>車両ID<input type="text" name="vehicleId" autocomplete="off"></label>
-        <label>評価者<input type="text" name="evaluator" autocomplete="off"></label>
+        <h2 data-i18n="hEval">評価情報</h2>
+        <label><span data-i18n="vehicleId">車両ID</span><input type="text" name="vehicleId" autocomplete="off"></label>
+        <label><span data-i18n="evaluator">評価者</span><input type="text" name="evaluator" autocomplete="off"></label>
 
-        <h2>事象の種類（6個）</h2>
+        <h2 data-i18n="hCats">事象の種類（6個）</h2>
         <div id="catInputs"></div>
-        <button type="button" id="resetCats" class="btn wide">種類を初期値に戻す</button>
+        <button type="button" id="resetCats" class="btn wide" data-i18n="resetCats">種類を初期値に戻す</button>
 
-        <h2>文字起こしモデル（端末内で処理）</h2>
+        <h2 data-i18n="hModel">文字起こしモデル（端末内で処理）</h2>
         <div id="modelInputs"></div>
-        <p class="hint">初回のみモデルをダウンロードします（Wi-Fi推奨）。以後は端末に保存され、通信なしで文字起こしできます。</p>
-        <h2>モデルの配布元</h2>
+        <p class="hint" data-i18n="modelHint">初回のみモデルをダウンロードします（Wi-Fi推奨）。以後は端末に保存され、通信なしで文字起こしできます。</p>
+        <h2 data-i18n="hHost">モデルの配布元</h2>
         <div id="hostInputs"></div>
-        <p class="hint">中国国内では huggingface.co に接続できないため hf-mirror.com を選んでください。一度ダウンロードしたモデルは配布元を変えても使えます（Whisper は配布元ごとに再ダウンロード）。</p>
+        <p class="hint" data-i18n="hostHint">中国国内では huggingface.co に接続できないため hf-mirror.com を選んでください。一度ダウンロードしたモデルは配布元を変えても使えます（Whisper は配布元ごとに再ダウンロード）。</p>
 
         <button type="button" id="loadModel" class="btn wide">モデルをダウンロード／読込</button>
         <p class="hint model-status" id="modelStatus"></p>
 
-        <h2>オプション</h2>
-        <label class="check"><input type="checkbox" name="useGps"> 位置情報(GPS)を記録する</label>
-        <label class="check"><input type="checkbox" name="keepAwake"> 画面を消灯させない</label>
+        <h2 data-i18n="hOptions">オプション</h2>
+        <label class="check"><input type="checkbox" name="useGps"> <span data-i18n="useGps">位置情報(GPS)を記録する</span></label>
+        <label class="check"><input type="checkbox" name="keepAwake"> <span data-i18n="keepAwake">画面を消灯させない</span></label>
 
-        <button type="submit" class="btn primary wide">保存</button>
+        <button type="submit" class="btn primary wide" data-i18n="save">保存</button>
       </form>
 
       <div class="settings danger">
-        <h2>データ管理</h2>
+        <h2 data-i18n="hData">データ管理</h2>
         <p class="hint" id="storageInfo"></p>
         <p class="hint persist" id="persistInfo"></p>
-        <button id="clearAll" class="btn danger-btn wide">全記録を削除（次のセッションへ）</button>
+        <button id="clearAll" class="btn danger-btn wide" data-i18n="clearAll">全記録を削除（次のセッションへ）</button>
       </div>
     </section>
   </main>
 
   <nav class="tabbar">
-    <button data-view="record" class="active">記録</button>
-    <button data-view="list">一覧</button>
-    <button data-view="settings">設定</button>
+    <button data-view="record" class="active" data-i18n="tabRecord">記録</button>
+    <button data-view="list" data-i18n="tabList">一覧</button>
+    <button data-view="settings" data-i18n="tabSettings">設定</button>
   </nav>
 
   <div id="toast" class="toast"></div>
 
-  <script src="zip.js?v=17"></script>
-  <script src="app.js?v=17"></script>
+  <script src="zip.js?v=18"></script>
+  <script src="i18n.js?v=18"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>

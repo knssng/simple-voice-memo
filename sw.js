@@ -1,8 +1,8 @@
 // オフライン用のアプリ本体キャッシュ + 並列計算用のヘッダー付与。ファイル更新時は VERSION を上げる。
-const VERSION = 'v17';
+const VERSION = 'v18';
 const PREFIX = 'voicememo-';
 const CACHE = `${PREFIX}${VERSION}`;
-const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'zip.js', 'whisper-worker.js', 'sensevoice-worker.js', 'lib/transformers.min.js', 'lib/ort.webgpu.min.mjs', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'i18n.js', 'zip.js', 'whisper-worker.js', 'sensevoice-worker.js', 'lib/transformers.min.js', 'lib/ort.webgpu.min.mjs', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
