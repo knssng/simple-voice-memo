@@ -177,7 +177,6 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .icon-btn.small { font-size: 12px; padding: 4px 8px; margin-top: 4px; align-self: flex-start; }
 .persist { color: #4ade80; }
 .persist.warn { color: #fbbf24; }
-.asr-time { color: var(--accent); }
 
 /* 録音ボタン + 言語切替 */
 .rec-row { display: flex; gap: 10px; flex: 0 0 auto; }

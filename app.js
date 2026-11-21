@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 
 /* =========================================================
  * 設定
@@ -153,9 +153,60 @@ function audioExt(mime) {
   if (mime.includes('wav')) return 'wav';
   return 'webm';
 }
+/*
+ * 記録の番号：評価日（録音開始日）＋セッション番号＋セッション内の通し番号（No）
+ * - セッションは「全記録を削除」で切り替わり（+1）、No は 1 から振り直す
+ * - 個別削除の欠番は詰めない
+ * - 内部の管理キー（IndexedDB の id）は別にあり、再利用されない
+ */
+const SESSION_KEY = 'voicememo.session.v1';
+const session = {
+  load() {
+    try {
+      const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+      if (s && s.no >= 1 && s.nextNo >= 1) return s;
+    } catch { /* ignore */ }
+    return { no: 1, nextNo: 1 };
+  },
+  save(s) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch { /* ignore */ } },
+  current() { return this.load().no; },
+  /** 新しい記録の番号を払い出す */
+  take() {
+    const s = this.load();
+    const no = s.nextNo;
+    s.nextNo = no + 1;
+    this.save(s);
+    return { sessionNo: s.no, no };
+  },
+  /** 全記録削除時：次のセッションへ */
+  next() {
+    const s = this.load();
+    this.save({ no: s.no + 1, nextNo: 1 });
+  },
+  /** 番号のない旧データに番号を振り、カウンタを既存の最大値より後ろに合わせる */
+  async migrate() {
+    const memos = (await db.allMemos()).sort((a, b) => a.id - b.id);
+    const s = this.load();
+    for (const m of memos) {
+      if (m.no) continue;
+      m.sessionNo = s.no;
+      m.no = s.nextNo++;
+      await db.updateMemo(m);
+    }
+    const maxNo = Math.max(0, ...memos.filter((m) => m.sessionNo === s.no).map((m) => m.no));
+    if (s.nextNo <= maxNo) s.nextNo = maxNo + 1;
+    this.save(s);
+  },
+};
+const memoNo = (m) => m.no ?? m.id;
+function ymd(iso, sep = '') {
+  const d = new Date(iso);
+  return [d.getFullYear(), pad(d.getMonth() + 1), pad(d.getDate())].join(sep);
+}
+
 function audioFileName(m) {
   if (!m.hasAudio) return '';
-  return `memo_${pad(m.id, 4)}_${fmtStamp(new Date(m.start))}_${sanitize(m.category)}.${audioExt(m.audioType)}`;
+  return `${ymd(m.start)}_S${pad(m.sessionNo || 1, 2)}_${pad(memoNo(m), 3)}_${sanitize(m.category)}.${audioExt(m.audioType)}`;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -287,6 +338,7 @@ const recorder = {
     const memo = {
       vehicleId: settings.vehicleId,
       evaluator: settings.evaluator,
+      ...session.take(),
       category: s.category,
       lang: s.lang,
       start: s.start.toISOString(),
@@ -755,7 +807,7 @@ const list = {
     const body = $('#memoBody');
     body.innerHTML = '';
     $('#emptyMsg').style.display = memos.length ? 'none' : 'block';
-    $('#count').textContent = `${memos.length} 件`;
+    $('#count').textContent = `セッション${session.current()}・${memos.length} 件`;
     for (const m of memos) body.appendChild(this.buildRow(m));
   },
 
@@ -768,7 +820,7 @@ const list = {
       tr.appendChild(c);
       return c;
     };
-    td('nowrap', m.id);
+    td('nowrap', memoNo(m));
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = m.category;
@@ -784,9 +836,6 @@ const list = {
     tm.children[0].textContent = fmtTime(m.start);
     tm.children[1].textContent = fmtTime(m.end);
     tm.children[2].textContent = `${m.durationSec.toFixed(1)}秒`;
-    const asrEl = document.createElement('div');
-    asrEl.className = 'dur asr-time';
-    tm.appendChild(asrEl);
     tm.title = `${fmtDateTime(m.start)} 〜 ${fmtDateTime(m.end)}`;
 
     const textCell = td('col-text');
@@ -838,12 +887,12 @@ const list = {
       oc.appendChild(a);
     }
     mkBtn('削除', 'del', async () => {
-      if (!confirm(`No.${m.id}（${m.category} ${fmtTime(m.start)}）を削除しますか？`)) return;
+      if (!confirm(`No.${memoNo(m)}（${m.category} ${fmtTime(m.start)}）を削除しますか？`)) return;
       await db.deleteMemo(m.id);
       this.render();
     });
 
-    this.rows.set(m.id, { tr, ta, statusEl, fit, asrEl });
+    this.rows.set(m.id, { tr, ta, statusEl, fit });
     this.applyState(m);
     return tr;
   },
@@ -857,9 +906,6 @@ const list = {
     r.statusEl.textContent = m.status === 'error' ? `文字起こし失敗：${m.asrError || ''}` : statusText(m);
     r.statusEl.hidden = !r.statusEl.textContent;
     r.statusEl.classList.toggle('err', m.status === 'error');
-    r.asrEl.textContent = m.status === 'done' && m.asrMs ? `変換${(m.asrMs / 1000).toFixed(1)}秒` : '';
-    r.asrEl.title = m.asrLabel || '';
-    if (m.status === 'done' && m.asrLabel) r.asrEl.textContent += ` ${m.asrLabel.startsWith('GPU') ? 'GPU' : 'CPU'}`;
     requestAnimationFrame(r.fit);
   },
 
@@ -912,9 +958,9 @@ function csvCell(v) {
 }
 
 function buildCsv(memos) {
-  const header = ['No', '車両ID', '評価者', '種類', '言語', '録音開始', '録音終了', '録音時間(秒)', '緯度', '経度', 'テキスト', '音声ファイル'];
+  const header = ['評価日', 'セッション', 'No', '車両ID', '評価者', '種類', '言語', '録音開始', '録音終了', '録音時間(秒)', '緯度', '経度', 'テキスト', '音声ファイル'];
   const rows = memos.map((m) => [
-    m.id, m.vehicleId, m.evaluator, m.category, (LANGS[m.lang] || LANGS.ja).csv,
+    ymd(m.start, '/'), m.sessionNo || 1, memoNo(m), m.vehicleId, m.evaluator, m.category, (LANGS[m.lang] || LANGS.ja).csv,
     fmtDateTime(m.start), fmtDateTime(m.end), m.durationSec.toFixed(1),
     m.lat != null ? m.lat.toFixed(6) : '', m.lng != null ? m.lng.toFixed(6) : '',
     m.text || '', audioFileName(m),
@@ -949,7 +995,7 @@ function exportBaseName() {
 }
 
 async function memosForExport() {
-  const memos = (await db.allMemos()).sort((a, b) => a.id - b.id);
+  const memos = (await db.allMemos()).sort((a, b) => (a.sessionNo || 1) - (b.sessionNo || 1) || memoNo(a) - memoNo(b));
   if (!memos.length) { toast('記録がありません'); return null; }
   const busy = memos.filter((m) => m.status === 'pending' || m.status === 'transcribing').length;
   if (busy && !confirm(`文字起こしが終わっていない記録が${busy}件あります。このまま出力しますか？`)) return null;
@@ -1066,7 +1112,7 @@ const settingsView = {
     for (const [id, info] of Object.entries(MODELS)) if (await modelCache.isCached(id)) cachedModels.push(info);
     const modelMB = cachedModels.reduce((a, i) => a + i.sizeMB, 0);
     const fmt = (mb) => (mb < 10 ? mb.toFixed(1) : Math.round(mb));
-    $('#storageInfo').textContent = `記録 ${memos.length} 件（音声 約${fmt(audioMB)}MB）／ モデル 約${modelMB}MB`
+    $('#storageInfo').textContent = `セッション${session.current()}：記録 ${memos.length} 件（音声 約${fmt(audioMB)}MB）／ モデル 約${modelMB}MB`
       + `${cachedModels.length ? `（${cachedModels.map((i) => i.label.replace(/（.*$/, '')).join('・')}）` : ''}`
       + `。削除前に必ずCSV/ZIPを出力してください。（アプリ版 ${APP_VERSION}）`;
 
@@ -1118,10 +1164,14 @@ $('#loadModel').addEventListener('click', async () => {
 });
 
 $('#clearAll').addEventListener('click', async () => {
-  if (!confirm('全ての記録と音声を削除します。元に戻せません。よろしいですか？')) return;
+  const cur = session.current();
+  if (!confirm(`セッション${cur}の全ての記録と音声を削除し、セッション${cur + 1}を開始します（No は 1 から）。元に戻せません。よろしいですか？`)) return;
+  transcriber.queue.length = 0; // 文字起こし待ちも破棄
   await db.clear();
-  toast('全記録を削除しました');
+  session.next();
+  toast(`全記録を削除しました。セッション${session.current()}を開始します`, 3000);
   settingsView.storageInfo();
+  ui.renderRecent();
 });
 
 document.querySelectorAll('.tabbar button').forEach((b) => {
@@ -1141,7 +1191,7 @@ requestWakeLock();
 // 一度ダウンロード済みのモデルなら裏で読み込んでおく（キャッシュから読むので通信は発生しない）
 modelCache.removeGpuFiles(); // 旧版の GPU 用ファイルを掃除
 modelCache.isCached(settings.model).then((cached) => { if (cached) transcriber.preload(); });
-transcriber.resumePending(); // 前回終わらなかった文字起こしを再開
+session.migrate().then(() => transcriber.resumePending()); // 旧データに番号を振ってから、前回終わらなかった文字起こしを再開
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
