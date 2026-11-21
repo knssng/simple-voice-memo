@@ -216,3 +216,10 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .model-status.warn { color: #fbbf24; }
 .model-status.err { color: #fca5a5; }
 #loadModel:disabled { opacity: .6; }
+
+/* 保存時の控えめな通知（ポップアップの代わり） */
+#recent.flash { animation: recent-flash 1.2s ease-out; }
+@keyframes recent-flash { 0% { border-color: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, .45); } 100% { border-color: var(--border); box-shadow: none; } }
+
+/* 通知は画面上部に表示し、録音ボタンに重ねない */
+.toast { top: calc(var(--safe-t) + 56px); bottom: auto; }

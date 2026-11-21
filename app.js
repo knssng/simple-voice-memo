@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 
 /* =========================================================
  * 設定
@@ -303,12 +303,10 @@ const recorder = {
     try {
       const id = await db.addMemo(memo, blob);
       memo.id = id;
-      toast(`保存：${s.category}（${memo.durationSec}秒）${blob ? ' → 文字起こし待ち' : ''}`);
+      // 連続録音の妨げにならないよう、保存時はポップアップを出さず「直前の記録」欄を光らせるだけにする
       if (blob) transcriber.enqueue(id);
-      if (blob && transcriber.state === 'idle' && !(await modelCache.isCached(settings.model))) {
-        toast('文字起こしモデルが未ダウンロードです。設定画面でダウンロードしてください', 4000);
-      }
-      ui.renderRecent();
+      await ui.renderRecent();
+      ui.flashRecent();
       list.refreshRow(memo);
     } catch (err) {
       toast('保存に失敗しました: ' + (err && err.message), 4000);
@@ -650,6 +648,13 @@ const ui = {
     this.updateRecBtn();
   },
 
+  flashRecent() {
+    const el = $('#recent');
+    el.classList.remove('flash');
+    void el.offsetWidth; // アニメーションを再始動
+    el.classList.add('flash');
+  },
+
   async renderRecent() {
     const memos = (await db.allMemos()).sort((a, b) => b.id - a.id).slice(0, 3);
     const el = $('#recent');
@@ -701,7 +706,6 @@ $('#langBtn').addEventListener('click', () => {
   settings.lang = settings.lang === 'ja' ? 'zh' : 'ja';
   saveSettings(settings);
   renderLang();
-  toast(settings.lang === 'zh' ? '录音语言：中文（普通话）' : '録音言語：日本語', 1500);
 });
 
 /* 録音ボタン：押下中のみ録音 */
