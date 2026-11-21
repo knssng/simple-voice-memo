@@ -167,7 +167,8 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
   #view-record.active { display: grid; grid-template-columns: 3fr 2fr; grid-template-rows: 1fr auto; gap: 10px; }
   #view-record .cat-grid { grid-column: 1; grid-row: 1 / span 2; }
   #view-record .recent { grid-column: 2; grid-row: 1; }
-  #view-record .rec-btn { grid-column: 2; grid-row: 2; height: 110px; }
+  #view-record .rec-row { grid-column: 2; grid-row: 2; }
+  #view-record .rec-btn, #view-record .lang-btn { height: 110px; }
 }
 
 #recLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -177,3 +178,31 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 .persist { color: #4ade80; }
 .persist.warn { color: #fbbf24; }
 .asr-time { color: var(--accent); }
+
+/* 録音ボタン + 言語切替 */
+.rec-row { display: flex; gap: 10px; flex: 0 0 auto; }
+.rec-row .rec-btn { flex: 1 1 auto; min-width: 0; }
+.lang-btn {
+  flex: 0 0 84px; height: 120px; border-radius: 20px; border: 3px solid var(--border);
+  font-size: 22px; font-weight: 800; writing-mode: horizontal-tb;
+  user-select: none; -webkit-user-select: none;
+}
+.lang-btn.lang-ja { background: #1e3a5f; color: #bfdbfe; border-color: #3b82f6; }
+.lang-btn.lang-zh { background: #5f1e1e; color: #fde68a; border-color: #f59e0b; }
+.lang-btn:disabled { opacity: .5; }
+.lang-tag { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 6px; border-radius: 6px; }
+.lang-tag.lang-ja { background: #1e3a5f; color: #bfdbfe; }
+.lang-tag.lang-zh { background: #5f1e1e; color: #fde68a; }
+#hostInputs label.check { align-items: flex-start; }
+#hostInputs span { display: flex; flex-direction: column; }
+#hostInputs small { color: var(--muted); font-size: 12px; }
+
+/* スマホ幅での詰め */
+.topbar .title { white-space: nowrap; }
+.topbar .meta { min-width: 0; }
+#metaInfo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lang-tag { white-space: nowrap; }
+.memo-table .col-text { min-width: 120px; }
+.memo-table td.ops .icon-btn { padding: 6px 6px; font-size: 12px; }
+.rec-btn { font-size: 19px; gap: 10px; padding: 0 12px; }
+.settings label.check input { flex: 0 0 auto; }

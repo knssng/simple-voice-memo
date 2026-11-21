@@ -72,11 +72,12 @@ self.onmessage = (e) => {
   const msg = e.data;
   chain = chain.then(async () => {
     try {
+      if (msg.host) env.remoteHost = `${msg.host.replace(/\/$/, '')}/`; // 配布元（中国国内ではミラー）
       if (msg.type === 'load') {
         await load(msg.model, msg.mode);
       } else if (msg.type === 'transcribe') {
         await load(msg.model, msg.mode);
-        const opts = { language: 'japanese', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 };
+        const opts = { language: msg.lang === 'zh' ? 'chinese' : 'japanese', task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 };
         let t0 = performance.now();
         let out;
         try {

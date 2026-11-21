@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
   <header class="topbar">
@@ -25,11 +25,14 @@
     <section id="view-record" class="view active">
       <div class="cat-grid" id="catGrid"></div>
       <div class="recent" id="recent"></div>
-      <button id="recBtn" class="rec-btn" disabled>
-        <span class="rec-dot"></span>
-        <span id="recLabel">種類を選択してください</span>
-        <span id="recTimer" class="rec-timer"></span>
-      </button>
+      <div class="rec-row">
+        <button id="recBtn" class="rec-btn" disabled>
+          <span class="rec-dot"></span>
+          <span id="recLabel">種類を選択してください</span>
+          <span id="recTimer" class="rec-timer"></span>
+        </button>
+        <button id="langBtn" class="lang-btn" type="button">日本語</button>
+      </div>
     </section>
 
     <!-- 一覧 -->
@@ -66,6 +69,10 @@
         <h2>文字起こしモデル（端末内で処理）</h2>
         <div id="modelInputs"></div>
         <p class="hint">初回のみモデルをダウンロードします（Wi-Fi推奨）。以後は端末に保存され、通信なしで文字起こしできます。</p>
+        <h2>モデルの配布元</h2>
+        <div id="hostInputs"></div>
+        <p class="hint">中国国内では huggingface.co に接続できないため hf-mirror.com を選んでください。一度ダウンロードしたモデルは配布元を変えても使えます（Whisper は配布元ごとに再ダウンロード）。</p>
+
         <h2>処理方式</h2>
         <div id="accelInputs"></div>
         <button type="button" id="loadModel" class="btn wide">モデルをダウンロード／読込</button>
@@ -95,7 +102,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="zip.js?v=10"></script>
-  <script src="app.js?v=10"></script>
+  <script src="zip.js?v=11"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>

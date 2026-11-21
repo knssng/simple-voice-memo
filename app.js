@@ -6,23 +6,33 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 
 /* =========================================================
  * 設定
  * ======================================================= */
 const SETTINGS_KEY = 'voicememo.settings.v1';
 const MODELS = {
-  'onnx-community/whisper-small': { label: '標準（small・約250MB）', note: '日本語の精度が高い。1件あたり十数秒' },
-  'onnx-community/whisper-base': { label: '軽量（base・約80MB）', note: '速いが誤変換が多い' },
+  'sensevoice-small': { engine: 'sensevoice', label: 'SenseVoice（FunASR・約240MB）', note: '推奨。中国語・日本語とも高精度で高速（数秒の音声を1秒前後）。CPUで処理' },
+  'onnx-community/whisper-small': { engine: 'whisper', label: 'Whisper small（OpenAI・約250MB）', note: '高精度。1件あたり数秒〜十数秒' },
+  'onnx-community/whisper-base': { engine: 'whisper', label: 'Whisper base（OpenAI・約80MB）', note: '軽量だが誤変換が多い' },
 };
-const DEFAULT_MODEL = 'onnx-community/whisper-small';
+const DEFAULT_MODEL = 'sensevoice-small';
+// モデルの配布元（中国国内では huggingface.co に接続できないためミラーを選ぶ）
+const HOSTS = {
+  hf: { label: 'Hugging Face', note: '日本など', url: 'https://huggingface.co' },
+  mirror: { label: 'hf-mirror.com', note: '中国国内向けミラー', url: 'https://hf-mirror.com' },
+};
+const LANGS = { ja: { label: '日本語', short: '日', csv: '日本語' }, zh: { label: '中文', short: '中', csv: '中国語' } };
+const engineOf = (model) => (MODELS[model] || MODELS[DEFAULT_MODEL]).engine;
 const DEFAULT_SETTINGS = {
   vehicleId: '',
   evaluator: '',
   categories: ['異音', '振動', '操縦安定性', '乗り心地', '警告灯・表示', 'その他'],
   model: DEFAULT_MODEL,
-  accel: 'cpu', // 'cpu'（複数スレッド） | 'webgpu'（GPU・試験的）
+  accel: 'cpu', // 'cpu'（複数スレッド） | 'webgpu'（GPU・試験的、Whisperのみ）
+  host: 'hf',
+  lang: 'ja',   // 録音時の言語（録音ボタン横でワンタップ切替）
   useGps: true,
   keepAwake: true,
 };
@@ -36,6 +46,8 @@ function loadSettings() {
     merged.categories = Array.from({ length: 6 }, (_, i) => (cats[i] ?? '').toString());
     if (!MODELS[merged.model]) merged.model = DEFAULT_MODEL;
     if (merged.accel !== 'webgpu') merged.accel = 'cpu';
+    if (!HOSTS[merged.host]) merged.host = 'hf';
+    if (!LANGS[merged.lang]) merged.lang = 'ja';
     return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -231,7 +243,7 @@ const recorder = {
   start(category) {
     if (this.active) return;
     if (!navigator.mediaDevices || !window.MediaRecorder) { toast('このブラウザは録音に対応していません'); return; }
-    const s = { category, start: new Date(), end: null, gps: gps.current(), chunks: [], mr: null, done: null, stopRequested: false };
+    const s = { category, lang: settings.lang, start: new Date(), end: null, gps: gps.current(), chunks: [], mr: null, done: null, stopRequested: false };
     this.active = s;
     ui.recordingStarted();
 
@@ -277,6 +289,7 @@ const recorder = {
       vehicleId: settings.vehicleId,
       evaluator: settings.evaluator,
       category: s.category,
+      lang: s.lang,
       start: s.start.toISOString(),
       end: s.end.toISOString(),
       durationSec: Math.round(durMs / 100) / 10,
@@ -317,8 +330,16 @@ const transcriber = {
   callbacks: new Map(),
 
   ensureWorker() {
-    if (this.worker) return;
-    this.worker = new Worker('whisper-worker.js?v=10', { type: 'module' });
+    const engine = engineOf(settings.model);
+    if (this.worker && this.workerEngine === engine) return;
+    if (this.worker) {
+      // 別エンジンに切り替える：メモリ節約のため前のワーカーは終了
+      this.worker.terminate();
+      this.loadedKey = null;
+      this.state = 'idle';
+    }
+    this.workerEngine = engine;
+    this.worker = new Worker(engine === 'sensevoice' ? 'sensevoice-worker.js?v=11' : 'whisper-worker.js?v=11', { type: 'module' });
     this.worker.onmessage = (e) => this.onMessage(e.data);
     this.worker.onerror = (e) => {
       this.state = 'error';
@@ -347,7 +368,7 @@ const transcriber = {
       this.callbacks.delete(msg.id);
       if (msg.type === 'error' && msg.id === undefined) {
         this.state = 'error';
-        this.lastError = msg.message;
+        this.lastError = msg.message + (settings.host === 'hf' && /fetch|取得|network|Failed/i.test(msg.message) ? '（中国国内では「モデルの配布元」を hf-mirror.com にしてください）' : '');
         ui.renderAsrStatus();
       }
       if (cb) cb(msg);
@@ -362,12 +383,13 @@ const transcriber = {
   },
 
   async preload() {
+    if (this.current !== null) return; // 処理中は次の処理の開始時に読み込む
     this.ensureWorker();
     if (this.loadedKey === wantKey() || this.state === 'loading') return;
-    this.fromCache = await modelCache.isCached(settings.model, settings.accel);
+    this.fromCache = await modelCache.isCached(settings.model, effectiveMode());
     this.state = 'loading';
     ui.renderAsrStatus();
-    this.worker.postMessage({ type: 'load', model: settings.model, mode: settings.accel });
+    this.worker.postMessage({ type: 'load', model: settings.model, mode: effectiveMode(), host: HOSTS[settings.host].url });
   },
 
   enqueue(id) {
@@ -394,13 +416,16 @@ const transcriber = {
       const audio = await decodeTo16k(blob);
       this.ensureWorker();
       if (this.loadedKey !== wantKey() && this.state !== 'loading') {
-        this.fromCache = await modelCache.isCached(settings.model, settings.accel);
+        this.fromCache = await modelCache.isCached(settings.model, effectiveMode());
         this.state = 'loading';
         ui.renderAsrStatus();
       }
       const res = await new Promise((resolve) => {
         this.callbacks.set(id, resolve);
-        this.worker.postMessage({ type: 'transcribe', id, model: settings.model, mode: settings.accel, audio }, [audio.buffer]);
+        this.worker.postMessage({
+          type: 'transcribe', id, model: settings.model, mode: effectiveMode(),
+          host: HOSTS[settings.host].url, lang: memo.lang || 'ja', audio,
+        }, [audio.buffer]);
       });
       const latest = await db.getMemo(id);
       if (!latest) return; // 処理中に削除された
@@ -434,10 +459,19 @@ const transcriber = {
   },
 };
 
-const wantKey = () => `${settings.model}|${settings.accel}`;
+// SenseVoice は常に CPU（int8 モデルは GPU では速くならないため）
+const effectiveMode = () => (engineOf(settings.model) === 'sensevoice' ? 'cpu' : settings.accel);
+const wantKey = () => `${settings.model}|${effectiveMode()}`;
 
 /* モデルのキャッシュ（transformers.js が Cache Storage 'transformers-cache' に保存する） */
 const modelCache = {
+  async sensevoiceCached() {
+    if (!('caches' in window)) return false;
+    try {
+      const c = await caches.open('sensevoice-cache');
+      return (await c.keys()).some((r) => r.url.endsWith('model.int8.onnx'));
+    } catch { return false; }
+  },
   async files(model) {
     if (!('caches' in window)) return [];
     try {
@@ -447,6 +481,7 @@ const modelCache = {
   },
   /** mode: 'cpu' は int8、'webgpu' は fp16/q4 のファイル。省略時はどちらか */
   async isCached(model, mode) {
+    if (engineOf(model) === 'sensevoice') return this.sensevoiceCached();
     const urls = (await this.files(model)).map((r) => r.url);
     const has = (re) => urls.some((u) => re.test(u));
     const cpu = has(/encoder_model_quantized\.onnx/) && has(/decoder_model_merged_quantized\.onnx/);
@@ -454,6 +489,7 @@ const modelCache = {
     return mode === 'cpu' ? cpu : mode === 'webgpu' ? gpu : (cpu || gpu);
   },
   async remove(model) {
+    if (engineOf(model) === 'sensevoice') { await caches.delete('sensevoice-cache'); return; }
     const c = await caches.open('transformers-cache');
     for (const r of await this.files(model)) await c.delete(r);
   },
@@ -505,9 +541,10 @@ const ui = {
     if (t.state === 'loading') txt = t.fromCache ? `モデルを端末から読込中 ${t.loadPercent()}%` : `モデルをダウンロード中 ${t.loadPercent()}%`;
     else if (t.state === 'error') txt = '文字起こしエラー';
     else if (n) txt = `文字起こし中（残り${n}件）`;
-    else if (t.loadedKey === wantKey()) txt = `文字起こし準備OK（${t.loadedLabel}）`;
+    else if (t.loadedKey === wantKey()) txt = '文字起こし準備OK';
     else txt = 'モデル未取得（設定でダウンロード）';
     $('#asrStatus').textContent = txt;
+    $('#asrStatus').title = t.loadedLabel || '';
     $('#asrStatus').hidden = !txt;
     const ms = $('#modelStatus');
     if (ms) {
@@ -560,14 +597,14 @@ const ui = {
       const sec = Math.floor((Date.now() - t0) / 1000);
       $('#recTimer').textContent = `${Math.floor(sec / 60)}:${pad(sec % 60)}`;
     }, 250);
-    document.querySelectorAll('.cat-btn, .tabbar button').forEach((b) => { b.dataset.wasDisabled = b.disabled; b.disabled = true; });
+    document.querySelectorAll('.cat-btn, .tabbar button, #langBtn').forEach((b) => { b.dataset.wasDisabled = b.disabled; b.disabled = true; });
   },
 
   recordingStopped() {
     clearInterval(this.timerId);
     $('#recTimer').textContent = '';
     $('#recBtn').classList.remove('recording');
-    document.querySelectorAll('.cat-btn, .tabbar button').forEach((b) => { b.disabled = b.dataset.wasDisabled === 'true'; });
+    document.querySelectorAll('.cat-btn, .tabbar button, #langBtn').forEach((b) => { b.disabled = b.dataset.wasDisabled === 'true'; });
     this.updateRecBtn();
   },
 
@@ -609,6 +646,21 @@ function statusText(m) {
   if (m.status === 'error') return '文字起こし失敗';
   return '';
 }
+
+/* 言語切替（ワンタップ） */
+function renderLang() {
+  const b = $('#langBtn');
+  b.textContent = LANGS[settings.lang].label;
+  b.className = `lang-btn lang-${settings.lang}`;
+  b.setAttribute('aria-label', `録音言語: ${LANGS[settings.lang].label}（タップで切替）`);
+}
+$('#langBtn').addEventListener('click', () => {
+  if (recorder.active) return;
+  settings.lang = settings.lang === 'ja' ? 'zh' : 'ja';
+  saveSettings(settings);
+  renderLang();
+  toast(settings.lang === 'zh' ? '录音语言：中文（普通话）' : '録音言語：日本語', 1500);
+});
 
 /* 録音ボタン：押下中のみ録音 */
 (function bindRecButton() {
@@ -674,7 +726,12 @@ const list = {
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = m.category;
-    td('').appendChild(tag);
+    const catCell = td('');
+    catCell.appendChild(tag);
+    const lg = document.createElement('div');
+    lg.className = `lang-tag lang-${m.lang || 'ja'}`;
+    lg.textContent = (LANGS[m.lang] || LANGS.ja).label;
+    catCell.appendChild(lg);
 
     const tm = td('nowrap time');
     tm.innerHTML = '<div></div><div></div><div class="dur"></div>';
@@ -809,9 +866,9 @@ function csvCell(v) {
 }
 
 function buildCsv(memos) {
-  const header = ['No', '車両ID', '評価者', '種類', '録音開始', '録音終了', '録音時間(秒)', '緯度', '経度', 'テキスト', '音声ファイル'];
+  const header = ['No', '車両ID', '評価者', '種類', '言語', '録音開始', '録音終了', '録音時間(秒)', '緯度', '経度', 'テキスト', '音声ファイル'];
   const rows = memos.map((m) => [
-    m.id, m.vehicleId, m.evaluator, m.category,
+    m.id, m.vehicleId, m.evaluator, m.category, (LANGS[m.lang] || LANGS.ja).csv,
     fmtDateTime(m.start), fmtDateTime(m.end), m.durationSec.toFixed(1),
     m.lat != null ? m.lat.toFixed(6) : '', m.lng != null ? m.lng.toFixed(6) : '',
     m.text || '', audioFileName(m),
@@ -934,10 +991,27 @@ const settingsView = {
         }
       });
     });
+    const hb = $('#hostInputs');
+    hb.innerHTML = '';
+    Object.entries(HOSTS).forEach(([id, info]) => {
+      const l = document.createElement('label');
+      l.className = 'check';
+      const r = document.createElement('input');
+      r.type = 'radio';
+      r.name = 'host';
+      r.value = id;
+      r.checked = settings.host === id;
+      const span = document.createElement('span');
+      span.innerHTML = '<b></b><small></small>';
+      span.firstChild.textContent = info.label;
+      span.lastChild.textContent = info.note;
+      l.append(r, span);
+      hb.appendChild(l);
+    });
     const ab = $('#accelInputs');
     ab.innerHTML = '';
     [['cpu', 'CPU（複数コアで並列計算）', `標準。${window.crossOriginIsolated ? '並列計算 有効' : '並列計算 無効（ページを開き直すと有効になります）'}`],
-      ['webgpu', 'GPU（WebGPU・試験的）', `${'gpu' in navigator ? 'この端末はWebGPU対応' : 'この端末・ブラウザはWebGPU非対応'}。GPU用のモデルを追加でダウンロード（約300〜410MB）。失敗時は自動でCPUに切替`]]
+      ['webgpu', 'GPU（WebGPU・試験的）', `${'gpu' in navigator ? 'この端末はWebGPU対応' : 'この端末・ブラウザはWebGPU非対応'}。Whisperのみ対象（SenseVoiceは常にCPU）。GPU用のモデルを追加でダウンロード（約300〜410MB）。失敗時は自動でCPUに切替`]]
       .forEach(([id, label, note]) => {
         const l = document.createElement('label');
         l.className = 'check';
@@ -988,6 +1062,8 @@ $('#settingsForm').addEventListener('submit', (e) => {
     categories: Array.from({ length: 6 }, (_, i) => f[`cat${i}`].value.trim()),
     model: f.model.value || DEFAULT_MODEL,
     accel: f.accel.value === 'webgpu' ? 'webgpu' : 'cpu',
+    host: HOSTS[f.host.value] ? f.host.value : 'hf',
+    lang: settings.lang,
     useGps: f.useGps.checked,
     keepAwake: f.keepAwake.checked,
   };
@@ -1022,6 +1098,7 @@ document.querySelectorAll('.tabbar button').forEach((b) => {
  * ======================================================= */
 ui.renderMeta();
 ui.renderCategories();
+renderLang();
 ui.renderRecent();
 ui.renderAsrStatus();
 gps.start();
