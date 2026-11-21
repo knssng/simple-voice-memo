@@ -171,3 +171,8 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 }
 
 #recLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+#modelInputs small.cached { color: #4ade80; }
+.icon-btn.small { font-size: 12px; padding: 4px 8px; margin-top: 4px; align-self: flex-start; }
+.persist { color: #4ade80; }
+.persist.warn { color: #fbbf24; }

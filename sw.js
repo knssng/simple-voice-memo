@@ -1,5 +1,5 @@
 // オフライン用のアプリ本体キャッシュ。ファイル更新時は VERSION を上げる。
-const VERSION = 'v8';
+const VERSION = 'v9';
 const CACHE = `voicememo-${VERSION}`;
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'zip.js', 'whisper-worker.js', 'lib/transformers.min.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 

@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 
 /* =========================================================
  * 設定
@@ -291,6 +291,9 @@ const recorder = {
       memo.id = id;
       toast(`保存：${s.category}（${memo.durationSec}秒）${blob ? ' → 文字起こし待ち' : ''}`);
       if (blob) transcriber.enqueue(id);
+      if (blob && transcriber.loadedModel !== settings.model && transcriber.state !== 'loading' && !(await modelCache.isCached(settings.model))) {
+        toast('文字起こしモデルをダウンロードします（約250MB）。Wi-Fi推奨', 4000);
+      }
       ui.renderRecent();
       list.refreshRow(memo);
     } catch (err) {
@@ -313,7 +316,7 @@ const transcriber = {
 
   ensureWorker() {
     if (this.worker) return;
-    this.worker = new Worker('whisper-worker.js?v=8', { type: 'module' });
+    this.worker = new Worker('whisper-worker.js?v=9', { type: 'module' });
     this.worker.onmessage = (e) => this.onMessage(e.data);
     this.worker.onerror = (e) => {
       this.state = 'error';
@@ -330,7 +333,7 @@ const transcriber = {
     } else if (msg.type === 'ready') {
       this.state = 'ready';
       this.loadedModel = msg.model;
-      try { localStorage.setItem(`voicememo.modelReady.${msg.model}`, '1'); } catch { /* ignore */ }
+      if (settingsView.visible()) settingsView.render();
       this.progress = {};
       ui.renderAsrStatus();
     } else if (msg.type === 'result' || msg.type === 'error') {
@@ -352,9 +355,10 @@ const transcriber = {
     return total ? Math.floor((loaded / total) * 100) : 0;
   },
 
-  preload() {
+  async preload() {
     this.ensureWorker();
-    if (this.loadedModel === settings.model) return;
+    if (this.loadedModel === settings.model || this.state === 'loading') return;
+    this.fromCache = await modelCache.isCached(settings.model);
     this.state = 'loading';
     ui.renderAsrStatus();
     this.worker.postMessage({ type: 'load', model: settings.model });
@@ -383,7 +387,11 @@ const transcriber = {
       if (!blob) throw new Error('音声が見つかりません');
       const audio = await decodeTo16k(blob);
       this.ensureWorker();
-      if (this.loadedModel !== settings.model) { this.state = 'loading'; ui.renderAsrStatus(); }
+      if (this.loadedModel !== settings.model && this.state !== 'loading') {
+        this.fromCache = await modelCache.isCached(settings.model);
+        this.state = 'loading';
+        ui.renderAsrStatus();
+      }
       const res = await new Promise((resolve) => {
         this.callbacks.set(id, resolve);
         this.worker.postMessage({ type: 'transcribe', id, model: settings.model, audio }, [audio.buffer]);
@@ -416,6 +424,25 @@ const transcriber = {
   async resumePending() {
     const memos = (await db.allMemos()).sort((a, b) => a.id - b.id);
     memos.filter((m) => m.hasAudio && (m.status === 'pending' || m.status === 'transcribing')).forEach((m) => this.enqueue(m.id));
+  },
+};
+
+/* モデルのキャッシュ（transformers.js が Cache Storage 'transformers-cache' に保存する） */
+const modelCache = {
+  async files(model) {
+    if (!('caches' in window)) return [];
+    try {
+      const c = await caches.open('transformers-cache');
+      return (await c.keys()).filter((r) => r.url.includes(`/${model}/`));
+    } catch { return []; }
+  },
+  async isCached(model) {
+    const urls = (await this.files(model)).map((r) => r.url);
+    return urls.some((u) => /encoder_model/.test(u)) && urls.some((u) => /decoder_model/.test(u));
+  },
+  async remove(model) {
+    const c = await caches.open('transformers-cache');
+    for (const r of await this.files(model)) await c.delete(r);
   },
 };
 
@@ -462,7 +489,7 @@ const ui = {
     const t = transcriber;
     const n = t.queue.length + (t.current !== null ? 1 : 0);
     let txt;
-    if (t.state === 'loading') txt = `モデル読込中 ${t.loadPercent()}%`;
+    if (t.state === 'loading') txt = t.fromCache ? `モデルを端末から読込中 ${t.loadPercent()}%` : `モデルをダウンロード中 ${t.loadPercent()}%`;
     else if (t.state === 'error') txt = '文字起こしエラー';
     else if (n) txt = `文字起こし中（残り${n}件）`;
     else if (t.loadedModel === settings.model) txt = '文字起こし準備OK';
@@ -471,7 +498,7 @@ const ui = {
     $('#asrStatus').hidden = !txt;
     const ms = $('#modelStatus');
     if (ms) {
-      ms.textContent = t.state === 'loading' ? `ダウンロード／読込中… ${t.loadPercent()}%`
+      ms.textContent = t.state === 'loading' ? (t.fromCache ? `端末から読込中…（通信なし） ${t.loadPercent()}%` : `ダウンロード中… ${t.loadPercent()}%`)
         : t.state === 'error' ? `エラー: ${t.lastError || ''}`
           : t.loadedModel === settings.model ? '読込済み（オフラインでも使えます）' : '未読込';
     }
@@ -866,10 +893,32 @@ const settingsView = {
       span.lastChild.textContent = info.note;
       l.append(r, span);
       mb.appendChild(l);
+      modelCache.isCached(id).then((cached) => {
+        if (!cached) return;
+        const tagEl = document.createElement('small');
+        tagEl.className = 'cached';
+        tagEl.textContent = '✓ ダウンロード済み（端末に保存）';
+        span.appendChild(tagEl);
+        if (id !== settings.model) {
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'icon-btn del small';
+          del.textContent = 'このモデルを削除';
+          del.addEventListener('click', async (ev) => {
+            ev.preventDefault();
+            if (!confirm(`${info.label} を端末から削除しますか？`)) return;
+            await modelCache.remove(id);
+            toast('モデルを削除しました');
+            this.render();
+          });
+          span.appendChild(del);
+        }
+      });
     });
     ui.renderAsrStatus();
     this.storageInfo();
   },
+  visible() { return $('#view-settings').classList.contains('active'); },
   async storageInfo() {
     const memos = await db.allMemos();
     let txt = `記録 ${memos.length} 件`;
@@ -878,6 +927,16 @@ const settingsView = {
       txt += ` / 使用量 約${Math.round(e.usage / 1024 / 1024)}MB（モデル含む）`;
     }
     $('#storageInfo').textContent = `${txt}。削除前に必ずCSV/ZIPを出力してください。（アプリ版 ${APP_VERSION}）`;
+
+    // 保存データが消されにくい状態かを表示
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    let persisted = false;
+    try { persisted = !!(navigator.storage && navigator.storage.persisted && await navigator.storage.persisted()); } catch { /* ignore */ }
+    const el = $('#persistInfo');
+    el.textContent = standalone
+      ? `ホーム画面から起動中：モデル・記録は端末に保持されます${persisted ? '（永続化済み）' : ''}`
+      : '⚠ Safariのタブで使用中：7日間開かないとモデル・記録が自動削除されることがあります。共有ボタン→「ホーム画面に追加」から起動してください。';
+    el.classList.toggle('warn', !standalone);
   },
 };
 
@@ -928,7 +987,7 @@ ui.renderAsrStatus();
 gps.start();
 requestWakeLock();
 // 一度ダウンロード済みのモデルなら裏で読み込んでおく（キャッシュから読むので通信は発生しない）
-try { if (localStorage.getItem(`voicememo.modelReady.${settings.model}`)) transcriber.preload(); } catch { /* ignore */ }
+modelCache.isCached(settings.model).then((cached) => { if (cached) transcriber.preload(); });
 transcriber.resumePending(); // 前回終わらなかった文字起こしを再開
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
