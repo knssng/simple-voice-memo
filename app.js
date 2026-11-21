@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 
 /* =========================================================
  * 設定
@@ -28,7 +28,7 @@ const engineOf = (model) => (MODELS[model] || MODELS[DEFAULT_MODEL]).engine;
 const DEFAULT_SETTINGS = {
   vehicleId: '',
   evaluator: '',
-  categories: ['異音', '振動', '操縦安定性', '乗り心地', '警告灯・表示', 'その他'],
+  categories: ['Take Over', 'ナビルート無視', '交通ルール無視', '車両挙動', '乗り心地', 'その他'],
   model: DEFAULT_MODEL,
   host: 'hf',
   lang: 'ja',   // 録音時の言語（録音ボタン横でワンタップ切替）
@@ -1100,6 +1100,11 @@ $('#settingsForm').addEventListener('submit', (e) => {
   const changed = settings.model !== prevModel;
   toast(changed ? '設定を保存しました。モデルを読み込み直します' : '設定を保存しました');
   if (changed) transcriber.preload();
+});
+
+$('#resetCats').addEventListener('click', () => {
+  DEFAULT_SETTINGS.categories.forEach((c, i) => { $('#settingsForm')[`cat${i}`].value = c; });
+  toast('初期値を入力しました。「保存」を押すと反映されます', 3000);
 });
 
 $('#loadModel').addEventListener('click', async () => {
