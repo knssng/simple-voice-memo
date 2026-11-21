@@ -222,3 +222,8 @@ main { padding: calc(var(--safe-t) + 52px) 0 calc(var(--safe-b) + 64px); height:
 
 /* 通知は画面上部に表示し、録音ボタンに重ねない */
 .toast { top: calc(var(--safe-t) + 56px); bottom: auto; }
+
+.memo-table tr.day-row td { background: var(--panel-2); color: var(--accent); font-weight: 700; font-size: 12px; padding: 4px 8px; }
+/* 種類名が長くても表がはみ出さないよう折り返す */
+.memo-table td .tag { white-space: normal; word-break: break-all; max-width: 5.5em; }
+.memo-table td .lang-tag { display: block; width: fit-content; }

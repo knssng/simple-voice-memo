@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 
 /* =========================================================
  * 設定
@@ -155,47 +155,65 @@ function audioExt(mime) {
 }
 /*
  * 記録の番号：評価日（録音開始日）＋セッション番号＋セッション内の通し番号（No）
- * - セッションは「全記録を削除」で切り替わり（+1）、No は 1 から振り直す
+ * - 評価日が変わると、セッション番号・No とも 1 に戻る
+ * - 同じ日に「全記録を削除」するとセッション番号 +1、No は 1 から
  * - 個別削除の欠番は詰めない
  * - 内部の管理キー（IndexedDB の id）は別にあり、再利用されない
  */
 const SESSION_KEY = 'voicememo.session.v1';
 const session = {
+  /** { date: 'YYYYMMDD', no: セッション番号, nextNo: 次の No } */
   load() {
     try {
       const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
       if (s && s.no >= 1 && s.nextNo >= 1) return s;
     } catch { /* ignore */ }
-    return { no: 1, nextNo: 1 };
+    return { date: '', no: 1, nextNo: 1 };
   },
   save(s) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch { /* ignore */ } },
-  current() { return this.load().no; },
-  /** 新しい記録の番号を払い出す */
-  take() {
+  /** 指定日の状態（日付が変わっていればセッション1・No.1 から） */
+  stateFor(date) {
     const s = this.load();
+    return s.date === date ? s : { date, no: 1, nextNo: 1 };
+  },
+  /** 次に録音したときのセッション番号（今日の日付で判定） */
+  current() { return this.stateFor(ymd(new Date())).no; },
+  /** 新しい記録の番号を払い出す（評価日＝録音開始日） */
+  take(start) {
+    const s = this.stateFor(ymd(start));
     const no = s.nextNo;
     s.nextNo = no + 1;
     this.save(s);
     return { sessionNo: s.no, no };
   },
-  /** 全記録削除時：次のセッションへ */
-  next() {
+  /** 全記録削除時：同じ日なら次のセッションへ（別の日ならその日のセッション1） */
+  /** 全記録削除後に始まるセッション番号 */
+  afterClear() {
+    const today = ymd(new Date());
     const s = this.load();
-    this.save({ no: s.no + 1, nextNo: 1 });
+    return s.date === today ? s.no + 1 : 1;
+  },
+  next() {
+    this.save({ date: ymd(new Date()), no: this.afterClear(), nextNo: 1 });
   },
   /** 番号のない旧データに番号を振り、カウンタを既存の最大値より後ろに合わせる */
   async migrate() {
     const memos = (await db.allMemos()).sort((a, b) => a.id - b.id);
-    const s = this.load();
+    const s0 = this.load();
+    if (!s0.date) {
+      // v15 以前の状態には日付がない：最新の記録の日付で引き継ぐ（記録がなければ今日）
+      const last = memos[memos.length - 1];
+      s0.date = ymd(last ? last.start : new Date());
+      this.save(s0);
+    }
     for (const m of memos) {
       if (m.no) continue;
-      m.sessionNo = s.no;
-      m.no = s.nextNo++;
+      Object.assign(m, this.take(m.start));
       await db.updateMemo(m);
     }
-    const maxNo = Math.max(0, ...memos.filter((m) => m.sessionNo === s.no).map((m) => m.no));
-    if (s.nextNo <= maxNo) s.nextNo = maxNo + 1;
-    this.save(s);
+    const s = this.load();
+    const maxNo = Math.max(0, ...memos.filter((m) => ymd(m.start) === s.date && m.sessionNo === s.no).map((m) => m.no));
+    if (s.nextNo <= maxNo) { s.nextNo = maxNo + 1; this.save(s); }
   },
 };
 const memoNo = (m) => m.no ?? m.id;
@@ -338,7 +356,7 @@ const recorder = {
     const memo = {
       vehicleId: settings.vehicleId,
       evaluator: settings.evaluator,
-      ...session.take(),
+      ...session.take(s.start),
       category: s.category,
       lang: s.lang,
       start: s.start.toISOString(),
@@ -798,7 +816,8 @@ const list = {
     this.urls.forEach((u) => URL.revokeObjectURL(u));
     this.urls.clear();
     this.rows.clear();
-    const memos = (await db.allMemos()).sort((a, b) => b.id - a.id);
+    // 録音開始時刻の新しい順
+    const memos = (await db.allMemos()).sort((a, b) => b.start.localeCompare(a.start) || b.id - a.id);
     for (const m of memos) {
       if (!m.hasAudio) continue;
       const blob = await db.getAudio(m.id);
@@ -808,7 +827,23 @@ const list = {
     body.innerHTML = '';
     $('#emptyMsg').style.display = memos.length ? 'none' : 'block';
     $('#count').textContent = `セッション${session.current()}・${memos.length} 件`;
-    for (const m of memos) body.appendChild(this.buildRow(m));
+    // 日付が複数あるときは、日付の変わり目に区切り行を入れる（No は日付ごとに振り直すため）
+    const multiDay = new Set(memos.map((m) => ymd(m.start))).size > 1;
+    let prevDay = null;
+    for (const m of memos) {
+      const day = ymd(m.start, '/');
+      if (multiDay && day !== prevDay) {
+        const tr = document.createElement('tr');
+        tr.className = 'day-row';
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.textContent = day;
+        tr.appendChild(td);
+        body.appendChild(tr);
+        prevDay = day;
+      }
+      body.appendChild(this.buildRow(m));
+    }
   },
 
   buildRow(m) {
@@ -995,7 +1030,8 @@ function exportBaseName() {
 }
 
 async function memosForExport() {
-  const memos = (await db.allMemos()).sort((a, b) => (a.sessionNo || 1) - (b.sessionNo || 1) || memoNo(a) - memoNo(b));
+  // 評価日 → セッション → No の順
+  const memos = (await db.allMemos()).sort((a, b) => ymd(a.start).localeCompare(ymd(b.start)) || (a.sessionNo || 1) - (b.sessionNo || 1) || memoNo(a) - memoNo(b));
   if (!memos.length) { toast('記録がありません'); return null; }
   const busy = memos.filter((m) => m.status === 'pending' || m.status === 'transcribing').length;
   if (busy && !confirm(`文字起こしが終わっていない記録が${busy}件あります。このまま出力しますか？`)) return null;
@@ -1164,8 +1200,8 @@ $('#loadModel').addEventListener('click', async () => {
 });
 
 $('#clearAll').addEventListener('click', async () => {
-  const cur = session.current();
-  if (!confirm(`セッション${cur}の全ての記録と音声を削除し、セッション${cur + 1}を開始します（No は 1 から）。元に戻せません。よろしいですか？`)) return;
+  const nextNo = session.afterClear();
+  if (!confirm(`全ての記録と音声を削除し、本日（${ymd(new Date(), '/')}）のセッション${nextNo}を開始します（No は 1 から）。元に戻せません。よろしいですか？`)) return;
   transcriber.queue.length = 0; // 文字起こし待ちも破棄
   await db.clear();
   session.next();
