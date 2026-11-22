@@ -6,7 +6,7 @@
  * （音声認識に Safari の Web Speech API は使わない。録音と同時に使うと iPhone で失敗するため）
  */
 
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 
 /* =========================================================
  * 設定
